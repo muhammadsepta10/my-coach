@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { ANIMATIONS } from '../anim/poses';
+import { existsSync } from 'node:fs';
+import { exerciseFrames } from '../ui/exerciseImages';
 import { EXERCISES, exercisesForDay } from './program';
 
 describe('program', () => {
-  it('setiap gerakan punya animasi', () => {
-    for (const e of EXERCISES) expect(ANIMATIONS[e.id], e.id).toBeDefined();
+  it('setiap gerakan punya 2 frame gambar (awal & akhir)', () => {
+    for (const e of EXERCISES) {
+      const [a, b] = exerciseFrames(e.id, '/');
+      expect(existsSync(`public${a}`), a).toBe(true);
+      expect(existsSync(`public${b}`), b).toBe(true);
+    }
   });
 
   it('gerakan berbeban punya mode alat & beban kalibrasi', () => {

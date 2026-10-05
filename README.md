@@ -7,8 +7,9 @@ dengan **1 set barbel 40 kg yang bisa dibongkar jadi dumbel**.
 
 - **Latihan Hari Ini**: gerakan, set × repetisi, beban, dan **susunan pelat per sisi** + instruksi
   rakit/bongkar barbel ↔ dumbel. Urutan gerakan diatur agar bongkar-pasang minimal.
-- **Animasi contoh gerakan** untuk setiap gerakan (figur SVG, tetap jalan offline), plus cara melakukan,
-  kesalahan umum, dan link video YouTube.
+- **Ilustrasi contoh gerakan** untuk setiap gerakan (dibuat dengan Canva AI): posisi awal dan akhir
+  berganti otomatis seperti animasi, tetap tersedia offline. Plus cara melakukan, kesalahan umum,
+  dan link video YouTube.
 - **Rotasi bergulir** A (Dada + Bicep) → B (Back + Tricep) → C (Lower) → Hari Aktif. Fase 2 (A-B-C-A-B-C-Aktif)
   ditawarkan setelah 6 minggu kalau lutut stabil.
 - **Deteksi beban maksimal (e1RM)** dengan rumus Epley dari setiap set, set kalibrasi di sesi pertama,
@@ -27,7 +28,7 @@ dengan **1 set barbel 40 kg yang bisa dibongkar jadi dumbel**.
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173  (pratinjau animasi: /?anim-preview)
+npm run dev        # http://localhost:5173  (pratinjau semua ilustrasi: /?anim-preview)
 npm test           # unit test logika coach
 npm run typecheck
 npm run build
@@ -36,7 +37,7 @@ npm run build
 Struktur:
 
 - `src/coach/` — logika coach murni (pelat, e1RM, progresi, rotasi, lutut, deload, planner) + program latihan.
-- `src/anim/` — kerangka figur & pose animasi tiap gerakan.
+- `public/exercises/` — ilustrasi gerakan (`<id>-a.webp` posisi awal, `<id>-b.webp` posisi akhir).
 - `src/data/` — penyimpanan IndexedDB (Dexie) + service yang menghubungkan logika dan data.
 - `src/ui/` — tampilan React.
 
