@@ -100,14 +100,16 @@ function eligibleCandidates(slot: SlotDef, input: Pick<SelectionInput, 'banned' 
  */
 function nextPrimary(slot: SlotDef, after: string | undefined, input: Pick<SelectionInput, 'banned' | 'knee' | 'favorites'>): string | undefined {
   const pool = eligibleCandidates(slot, input);
-  const favs = pool.filter((id) => input.favorites.includes(id));
-  const use = favs.length ? favs : pool;
-  if (use.length === 0) return undefined;
+  if (pool.length === 0) return undefined;
+  const others = pool.filter((id) => id !== after);
+  const favs = others.filter((id) => input.favorites.includes(id));
+  const use = favs.length ? favs : others;
+  if (use.length === 0) return pool[0];
   if (after === undefined) return use[0];
   const start = slot.candidates.indexOf(after);
   for (let k = 1; k <= slot.candidates.length; k++) {
     const id = slot.candidates[(start + k) % slot.candidates.length];
-    if (use.includes(id) && id !== after) return id;
+    if (use.includes(id)) return id;
   }
   return use[0];
 }
@@ -117,8 +119,9 @@ function newBlock(input: SelectionInput, index: number): BlockInfo {
   for (const slot of SLOTS.filter((s) => s.role === 'primary')) {
     const def = slot.candidates[0];
     let pick: string | undefined;
-    if (index <= 1) {
-      // kalibrasi & blok pertama: gerakan asli (⭐) supaya data kalibrasi terpakai
+    if (index <= 1 || !input.block) {
+      // kalibrasi & blok pertama (juga pengguna lama yang belum punya blok):
+      // gerakan asli (⭐) supaya data kalibrasi terpakai
       pick = eligibleCandidates(slot, input).includes(def) ? def : nextPrimary(slot, def, input);
     } else {
       pick = nextPrimary(slot, input.block?.assignments[slot.id] ?? def, input);

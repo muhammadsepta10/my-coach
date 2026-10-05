@@ -317,3 +317,19 @@ describe('planAlternatives', () => {
     expect(hinge).toEqual([]);
   });
 });
+
+describe('selectExercises — temuan review', () => {
+  it('pengguna lama tanpa blok tersimpan: blok pertama tetap gerakan asli (⭐)', () => {
+    const sel = selectExercises(input({ programStart: '2026-01-01', today: '2026-03-20' }));
+    expect(sel.block.index).toBeGreaterThan(1);
+    expect(sel.block.assignments).toMatchObject({ A1: 'floor-press', A3: 'seated-ohp', B1: 'bent-over-row', C1: 'goblet-box-squat' });
+  });
+
+  it('favorit satu-satunya yang mandek tetap dirotasi lebih cepat', () => {
+    const block: BlockInfo = { index: 1, start: '2026-02-15', assignments: { A1: 'floor-press' } };
+    const states = { 'floor-press': calibrated('floor-press', 9.4, { stallStreak: EARLY_ROTATION_STALL }) };
+    const sel = selectExercises(input({ block, states, favorites: ['floor-press'] }));
+    expect(sel.picks.find((p) => p.slotId === 'A1')!.def.id).not.toBe('floor-press');
+    expect(sel.rotatedAway).toEqual(['floor-press']);
+  });
+});

@@ -1,17 +1,15 @@
 /**
  * Service "coach": menghubungkan logika coach (murni) dengan penyimpanan IndexedDB.
  */
-import { daysBetween } from '../coach/dates';
+import { addDays, daysBetween } from '../coach/dates';
 import { DELOAD_LOAD_FACTOR, isDeloadActive, shouldDeload } from '../coach/deload';
-import { kneeAccess, kneeModifier } from '../coach/knee';
+import { KNEE_LOAD_FACTOR, kneeAccess, kneeModifier } from '../coach/knee';
 import { type EquipmentConfig, roundDownToAchievable } from '../coach/plates';
-import { type PlanContext, finalizeExercise, planAlternatives, planSession, planSlotExercise, targetRir } from '../coach/planner';
+import { type PlanContext, type PlannedExercise, finalizeExercise, planAlternatives, planSession, planSlotExercise, targetRir } from '../coach/planner';
 import { EXERCISE_BY_ID, SLOT_BY_ID } from '../coach/program';
 import { type SelectionHistory, blockIndexFor, blockStartFor, selectExercises, slotIdOf } from '../coach/selection';
 import { applyCalibration, initialState } from '../coach/progression';
-import { KNEE_LOAD_FACTOR } from '../coach/knee';
 import { nextDay as rotationNext, phase2Eligible } from '../coach/rotation';
-import { addDays } from '../coach/dates';
 import type { DayType, ExerciseState, Feel, TrainingDay } from '../coach/types';
 import type { BodyWeight, CoachDB, Profile, SessionExercise, SessionRecord, Settings } from './db';
 
@@ -120,11 +118,14 @@ export function createCoach(db: CoachDB, now: () => string) {
     for (const d of done) {
       for (const e of d.exercises) {
         const def = EXERCISE_BY_ID[e.exerciseId];
-        if (def) lastBySlot[e.slotId ?? slotIdOf(def)] = e.exerciseId;
+        // gerakan yang dilewati tidak dihitung sebagai "dipakai"
+        if (def && !e.skipped) lastBySlot[e.slotId ?? slotIdOf(def)] = e.exerciseId;
       }
     }
     const last = done[done.length - 1];
-    const lastCore = last ? last.exercises.filter((e) => EXERCISE_BY_ID[e.exerciseId]?.block === 'core').map((e) => e.exerciseId) : [];
+    const lastCore = last
+      ? last.exercises.filter((e) => !e.skipped && EXERCISE_BY_ID[e.exerciseId]?.block === 'core').map((e) => e.exerciseId)
+      : [];
     return { lastBySlot, lastCore };
   }
 
@@ -203,18 +204,7 @@ export function createCoach(db: CoachDB, now: () => string) {
       if (s.deloadReason) notes.unshift(`Minggu ringan: ${s.deloadReason}.`);
     }
 
-    const exercises: SessionExercise[] = plan.exercises.map((p) => ({
-      exerciseId: p.def.id,
-      slotId: p.slotId,
-      ...(p.seed ? { seed: p.seed } : {}),
-      displayName: p.displayName,
-      restSec: p.restSec,
-      tempo: p.tempo,
-      kneeReduced: p.kneeReduced,
-      notes: p.notes,
-      planned: p.sets,
-      logged: p.sets.map((ps) => ({ kind: ps.kind, reps: 0, load: ps.load, done: false })),
-    }));
+    const exercises = plan.exercises.map(toSessionExercise);
 
     const rec: SessionRecord = {
       date: today,
@@ -282,19 +272,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     const giveWarmup = !session.exercises
       .slice(0, exIdx)
       .some((e) => !e.skipped && e.planned.some((p) => p.kind === 'warmup' || p.kind === 'calibration'));
-    const p = planSlotExercise(ctx, def, slotId, giveWarmup);
-    const next: SessionExercise = {
-      exerciseId: def.id,
-      slotId,
-      ...(p.seed ? { seed: p.seed } : {}),
-      displayName: p.displayName,
-      restSec: p.restSec,
-      tempo: p.tempo,
-      kneeReduced: p.kneeReduced,
-      notes: p.notes,
-      planned: p.sets,
-      logged: p.sets.map((ps) => ({ kind: ps.kind, reps: 0, load: ps.load, done: false })),
-    };
+    const next = toSessionExercise(planSlotExercise(ctx, def, slotId, giveWarmup));
     const updated = await patchSession(id, (s) => {
       s.exercises[exIdx] = next;
     });
@@ -625,6 +603,21 @@ export function createCoach(db: CoachDB, now: () => string) {
     importData,
     resetAll,
     updateExerciseState,
+  };
+}
+
+function toSessionExercise(p: PlannedExercise): SessionExercise {
+  return {
+    exerciseId: p.def.id,
+    slotId: p.slotId,
+    ...(p.seed ? { seed: p.seed } : {}),
+    displayName: p.displayName,
+    restSec: p.restSec,
+    tempo: p.tempo,
+    kneeReduced: p.kneeReduced,
+    notes: p.notes,
+    planned: p.sets,
+    logged: p.sets.map((ps) => ({ kind: ps.kind, reps: 0, load: ps.load, done: false })),
   };
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { family, setupInstruction } from '../coach/planner';
 import { achievableLoads, formatKg } from '../coach/plates';
 import { DAY_LABEL, EXERCISE_BY_ID, MOBILITY_STEPS, SLOT_BY_ID, WARMUP_STEPS, youtubeUrl } from '../coach/program';
+import { slotIdOf } from '../coach/selection';
 import type { Feel } from '../coach/types';
 import type { SessionExercise, SessionRecord, Settings } from '../data/db';
 import { coach } from '../data/instance';
@@ -192,7 +193,7 @@ function ExerciseStep({ session, settings }: { session: SessionRecord; settings:
         </div>
         {swapping && (
           <SwapSheet
-            title={`${SLOT_BY_ID[ex.slotId ?? def.slot]?.label ?? 'Core'} · sekarang: ${ex.displayName}`}
+            title={`${SLOT_BY_ID[ex.slotId ?? slotIdOf(def)]?.label ?? 'Core'} · sekarang: ${ex.displayName}`}
             load={() => coach.swapOptions(session.id!, idx)}
             onPick={(id) => coach.swapExercise(session.id!, idx, id)}
             onClose={() => setSwapping(false)}

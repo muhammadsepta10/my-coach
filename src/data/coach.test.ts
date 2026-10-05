@@ -342,3 +342,21 @@ describe('migrasi database v1 → v2', () => {
     expect((await c.nextDay()).dayType).toBe('B');
   });
 });
+
+describe('riwayat slot', () => {
+  it('gerakan yang dilewati tidak dihitung sebagai "sesi terakhir"', async () => {
+    const s = (await coach.startSession({}))!;
+    const i = s.exercises.findIndex((e) => e.slotId === 'A6');
+    const skipped = s.exercises[i].exerciseId;
+    await coach.skipExercise(s.id!, i, true);
+    await coach.finishSession(s.id!, {});
+    await doSession();
+    await doSession();
+    const a = (await coach.startSession({}))!;
+    await coach.finishActiveDay(a.id!, { minutes: 30, mobility: false });
+    // A6 masih bisa memilih gerakan yang dilewati: ambil ❤️ supaya pasti terpilih kalau tidak dikecualikan
+    await coach.toggleFavorite(skipped);
+    const plan = await coach.previewPlan();
+    expect(plan.exercises.find((e) => e.slotId === 'A6')!.def.id).toBe(skipped);
+  });
+});
