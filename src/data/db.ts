@@ -2,6 +2,8 @@ import Dexie, { type Table } from 'dexie';
 import type { PlannedSet, LoggedSet } from '../coach/planner';
 import type { EquipmentConfig } from '../coach/plates';
 import type { Phase } from '../coach/rotation';
+import { EXERCISE_BY_ID } from '../coach/program';
+import { type BlockInfo, slotIdOf } from '../coach/selection';
 import type { DayType, ExerciseState, Feel } from '../coach/types';
 
 export interface Profile {
@@ -26,6 +28,16 @@ export interface Settings {
   /** tawaran fase 2 sudah ditolak sampai tanggal ini */
   phase2SnoozeUntil?: string;
   sound: boolean;
+  /** ❤️ gerakan favorit: lebih sering dipilih */
+  favorites: string[];
+  /** 🚫 gerakan yang tidak pernah dipilih */
+  banned: string[];
+  /** blok 4 minggu yang sedang berjalan */
+  block?: BlockInfo;
+  /** kartu "Blok baru" sudah ditutup untuk blok ini */
+  blockCardSeen?: number;
+  /** "Ganti gerakan" dari pratinjau Beranda, dipakai sekali saat sesi dimulai */
+  pendingSwaps?: { dayType: DayType; picks: Record<string, string> };
 }
 
 export interface LoggedSetRecord extends LoggedSet {
@@ -34,6 +46,10 @@ export interface LoggedSetRecord extends LoggedSet {
 
 export interface SessionExercise {
   exerciseId: string;
+  /** slot yang diisi gerakan ini (sesi lama: diturunkan dari definisi gerakan) */
+  slotId?: string;
+  /** state awal hasil perkiraan dari gerakan saudara */
+  seed?: ExerciseState;
   displayName: string;
   restSec: number;
   tempo: boolean;
@@ -54,6 +70,8 @@ export interface SessionRecord {
   status: 'in_progress' | 'done';
   deload: boolean;
   inCalibrationPhase: boolean;
+  /** pengurangan beban lutut aktif di sesi ini */
+  kneeReduce?: boolean;
   notes: string[];
   kneePre?: number;
   kneePost?: number;
@@ -90,6 +108,27 @@ export class CoachDB extends Dexie {
       states: 'exerciseId',
       bodyweights: '++id, date',
     });
+    // v2: bank gerakan — preferensi ❤️/🚫 dan slot di tiap gerakan sesi
+    this.version(2)
+      .stores({})
+      .upgrade(async (tx) => {
+        await tx
+          .table('settings')
+          .toCollection()
+          .modify((s: Settings) => {
+            s.favorites ??= [];
+            s.banned ??= [];
+          });
+        await tx
+          .table('sessions')
+          .toCollection()
+          .modify((s: SessionRecord) => {
+            for (const e of s.exercises) {
+              const def = EXERCISE_BY_ID[e.exerciseId];
+              if (!e.slotId && def) e.slotId = slotIdOf(def);
+            }
+          });
+      });
   }
 }
 

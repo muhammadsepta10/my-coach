@@ -3,21 +3,24 @@
  */
 import { daysBetween } from '../coach/dates';
 import { DELOAD_LOAD_FACTOR, isDeloadActive, shouldDeload } from '../coach/deload';
-import { kneeModifier, stepUpUnlocked } from '../coach/knee';
+import { kneeAccess, kneeModifier } from '../coach/knee';
 import { type EquipmentConfig, roundDownToAchievable } from '../coach/plates';
-import { finalizeExercise, planSession, targetRir } from '../coach/planner';
-import { EXERCISE_BY_ID } from '../coach/program';
+import { type PlanContext, finalizeExercise, planAlternatives, planSession, planSlotExercise, targetRir } from '../coach/planner';
+import { EXERCISE_BY_ID, SLOT_BY_ID } from '../coach/program';
+import { type SelectionHistory, blockIndexFor, blockStartFor, selectExercises, slotIdOf } from '../coach/selection';
 import { applyCalibration, initialState } from '../coach/progression';
 import { KNEE_LOAD_FACTOR } from '../coach/knee';
 import { nextDay as rotationNext, phase2Eligible } from '../coach/rotation';
-import type { DayType, ExerciseState, Feel } from '../coach/types';
+import { addDays } from '../coach/dates';
+import type { DayType, ExerciseState, Feel, TrainingDay } from '../coach/types';
 import type { BodyWeight, CoachDB, Profile, SessionExercise, SessionRecord, Settings } from './db';
 
 export type Coach = ReturnType<typeof createCoach>;
 
 export function createCoach(db: CoachDB, now: () => string) {
   async function getSettings(): Promise<Settings | undefined> {
-    return db.settings.get('settings');
+    const s = await db.settings.get('settings');
+    return s && withDefaults(s);
   }
 
   async function requireSettings(): Promise<Settings> {
@@ -41,6 +44,8 @@ export function createCoach(db: CoachDB, now: () => string) {
       programStart: today,
       phase: 1,
       sound: true,
+      favorites: [],
+      banned: [],
     });
     await db.bodyweights.add({ date: today, kg: profile.weightKg });
   }
@@ -108,6 +113,40 @@ export function createCoach(db: CoachDB, now: () => string) {
     return { active: false, reason: r.deload ? r.reason : undefined };
   }
 
+  /** slot → gerakan terakhir yang mengisinya, dan core sesi latihan terakhir */
+  async function selectionHistory(): Promise<SelectionHistory> {
+    const done = (await doneSessions()).filter((d) => d.dayType !== 'AKTIF');
+    const lastBySlot: Record<string, string> = {};
+    for (const d of done) {
+      for (const e of d.exercises) {
+        const def = EXERCISE_BY_ID[e.exerciseId];
+        if (def) lastBySlot[e.slotId ?? slotIdOf(def)] = e.exerciseId;
+      }
+    }
+    const last = done[done.length - 1];
+    const lastCore = last ? last.exercises.filter((e) => EXERCISE_BY_ID[e.exerciseId]?.block === 'core').map((e) => e.exerciseId) : [];
+    return { lastBySlot, lastCore };
+  }
+
+  async function planContext(p: { dayType: DayType; today: string; deload: boolean; kneeReduce: boolean }): Promise<PlanContext> {
+    const settings = await requireSettings();
+    const knee = kneeAccess(await lastCSessions(), settings.phase, p.kneeReduce);
+    const swaps = settings.pendingSwaps?.dayType === p.dayType ? settings.pendingSwaps.picks : undefined;
+    return {
+      ...p,
+      states: await getStates(),
+      eq: settings.equipment,
+      programStart: settings.programStart,
+      kneeMediumOpen: knee.mediumOpen,
+      kneeHighOpen: knee.highOpen,
+      history: await selectionHistory(),
+      favorites: settings.favorites,
+      banned: settings.banned,
+      block: settings.block,
+      overrides: swaps,
+    };
+  }
+
   /** Rencana hari berikutnya tanpa menyimpan apa pun (untuk Beranda). */
   async function previewPlan() {
     const settings = await requireSettings();
@@ -115,19 +154,28 @@ export function createCoach(db: CoachDB, now: () => string) {
     const { dayType } = await nextDay();
     const d = dayType === 'AKTIF' ? { active: false } : await deloadStatus();
     const deload = d.active || ('reason' in d && !!d.reason);
-    const knee = dayType === 'C' ? await kneeStatus(undefined) : { reduce: false };
+    const knee = await kneeStatus(undefined);
     const deloadReason = d.active ? settings.deloadReason : 'reason' in d ? d.reason : undefined;
-    const plan = planSession({
-      dayType,
-      states: await getStates(),
-      eq: settings.equipment,
-      today,
-      programStart: settings.programStart,
-      deload,
-      kneeReduce: knee.reduce,
-      stepUpOpen: stepUpUnlocked(await lastCSessions()),
-    });
+    const plan = planSession(await planContext({ dayType, today, deload, kneeReduce: knee.reduce }));
     return { ...plan, deloadReason };
+  }
+
+  /** Alternatif "Ganti gerakan" untuk gerakan ke-`index` di pratinjau Beranda. */
+  async function previewSwapOptions(index: number) {
+    const plan = await previewPlan();
+    const cur = plan.exercises[index];
+    if (!cur) return [];
+    const knee = await kneeStatus(undefined);
+    const ctx = await planContext({ dayType: plan.dayType, today: now(), deload: plan.deload, kneeReduce: knee.reduce });
+    return planAlternatives(ctx, cur.slotId, cur.def.id, plan.exercises.map((e) => e.def));
+  }
+
+  /** Simpan pilihan "Ganti gerakan" dari pratinjau; dipakai sekali saat sesi berikutnya dimulai. */
+  async function previewSwap(slotId: string, exerciseId: string) {
+    const s = await requireSettings();
+    const { dayType } = await nextDay();
+    const prev = s.pendingSwaps?.dayType === dayType ? s.pendingSwaps.picks : {};
+    await saveSettings({ pendingSwaps: { dayType, picks: { ...prev, [slotId]: exerciseId } } });
   }
 
   async function startSession(opts: { kneePre?: number }): Promise<SessionRecord | undefined> {
@@ -146,20 +194,10 @@ export function createCoach(db: CoachDB, now: () => string) {
         await saveSettings({ deloadStart: today, deloadReason: d.reason });
       }
     }
-    const knee = dayType === 'C' ? await kneeStatus(opts.kneePre) : { reduce: false };
-    const cs = await lastCSessions();
-    const plan = planSession({
-      dayType,
-      states: await getStates(),
-      eq: settings.equipment,
-      today,
-      programStart: settings.programStart,
-      deload,
-      kneeReduce: knee.reduce,
-      stepUpOpen: stepUpUnlocked(cs),
-    });
+    const knee = dayType === 'C' ? await kneeStatus(opts.kneePre) : await kneeStatus(undefined);
+    const plan = planSession(await planContext({ dayType, today, deload, kneeReduce: knee.reduce }));
     const notes = [...plan.notes];
-    if (knee.reduce && 'reason' in knee && knee.reason) notes.unshift(knee.reason);
+    if (dayType === 'C' && knee.reduce && 'reason' in knee && knee.reason) notes.unshift(knee.reason);
     if (deload) {
       const s = await requireSettings();
       if (s.deloadReason) notes.unshift(`Minggu ringan: ${s.deloadReason}.`);
@@ -167,6 +205,8 @@ export function createCoach(db: CoachDB, now: () => string) {
 
     const exercises: SessionExercise[] = plan.exercises.map((p) => ({
       exerciseId: p.def.id,
+      slotId: p.slotId,
+      ...(p.seed ? { seed: p.seed } : {}),
       displayName: p.displayName,
       restSec: p.restSec,
       tempo: p.tempo,
@@ -184,14 +224,151 @@ export function createCoach(db: CoachDB, now: () => string) {
       status: 'in_progress',
       deload,
       inCalibrationPhase: plan.inCalibrationPhase,
+      kneeReduce: knee.reduce,
       notes,
       kneePre: opts.kneePre,
       exercises,
       cursor: 0,
       startedAt: Date.now(),
     };
-    rec.id = await db.sessions.add(rec);
+    await db.transaction('rw', db.sessions, db.settings, db.states, async () => {
+      rec.id = await db.sessions.add(rec);
+      const patch: Partial<Settings> = {};
+      if (dayType !== 'AKTIF') patch.pendingSwaps = undefined;
+      if (plan.blockChanged && plan.block) patch.block = plan.block;
+      if (Object.keys(patch).length) await db.settings.update('settings', patch);
+      // gerakan yang diganti karena mandek mulai dari nol lagi kalau nanti kembali
+      for (const id of plan.rotatedAway) await db.states.update(id, { stallStreak: 0 });
+    });
     return rec;
+  }
+
+  async function sessionContext(session: SessionRecord): Promise<PlanContext> {
+    const ctx = await planContext({
+      dayType: session.dayType,
+      today: session.date,
+      deload: session.deload,
+      kneeReduce: session.kneeReduce ?? session.exercises.some((e) => e.kneeReduced),
+    });
+    return { ...ctx, overrides: undefined };
+  }
+
+  /** Alternatif "Ganti gerakan" untuk gerakan di sesi yang sedang berjalan. */
+  async function swapOptions(id: number, exIdx: number) {
+    const session = await db.sessions.get(id);
+    const ex = session?.exercises[exIdx];
+    if (!session || !ex) return [];
+    const def = EXERCISE_BY_ID[ex.exerciseId];
+    const ctx = await sessionContext(session);
+    const defs = session.exercises.map((e) => EXERCISE_BY_ID[e.exerciseId]).filter(Boolean);
+    return planAlternatives(ctx, ex.slotId ?? slotIdOf(def), def.id, defs);
+  }
+
+  /** set kerja yang sudah dicatat mengunci gerakan (urungkan dulu untuk ganti) */
+  function swapLocked(ex: SessionExercise): boolean {
+    return ex.logged.some((l, i) => l.done && ex.planned[i].kind !== 'warmup');
+  }
+
+  async function swapExercise(id: number, exIdx: number, exerciseId: string) {
+    const session = await db.sessions.get(id);
+    if (!session) throw new Error('Sesi tidak ditemukan');
+    const ex = session.exercises[exIdx];
+    if (swapLocked(ex)) throw new Error('Urungkan dulu set yang sudah dicatat sebelum mengganti gerakan.');
+    const options = await swapOptions(id, exIdx);
+    if (!options.some((o) => o.def.id === exerciseId)) throw new Error('Gerakan ini tidak bisa dipakai untuk slot ini.');
+    const def = EXERCISE_BY_ID[exerciseId];
+    const slotId = ex.slotId ?? slotIdOf(EXERCISE_BY_ID[ex.exerciseId]);
+    const ctx = await sessionContext(session);
+    const giveWarmup = !session.exercises
+      .slice(0, exIdx)
+      .some((e) => !e.skipped && e.planned.some((p) => p.kind === 'warmup' || p.kind === 'calibration'));
+    const p = planSlotExercise(ctx, def, slotId, giveWarmup);
+    const next: SessionExercise = {
+      exerciseId: def.id,
+      slotId,
+      ...(p.seed ? { seed: p.seed } : {}),
+      displayName: p.displayName,
+      restSec: p.restSec,
+      tempo: p.tempo,
+      kneeReduced: p.kneeReduced,
+      notes: p.notes,
+      planned: p.sets,
+      logged: p.sets.map((ps) => ({ kind: ps.kind, reps: 0, load: ps.load, done: false })),
+    };
+    const updated = await patchSession(id, (s) => {
+      s.exercises[exIdx] = next;
+    });
+    const settings = await requireSettings();
+    if (SLOT_BY_ID[slotId]?.role === 'primary' && settings.block) {
+      await saveSettings({ block: { ...settings.block, assignments: { ...settings.block.assignments, [slotId]: def.id } } });
+    }
+    return updated;
+  }
+
+  async function toggleFavorite(exerciseId: string) {
+    const s = await requireSettings();
+    const on = !s.favorites.includes(exerciseId);
+    await saveSettings({
+      favorites: on ? [...s.favorites, exerciseId] : s.favorites.filter((x) => x !== exerciseId),
+      banned: s.banned.filter((x) => x !== exerciseId),
+    });
+  }
+
+  async function toggleBanned(exerciseId: string) {
+    const s = await requireSettings();
+    const on = !s.banned.includes(exerciseId);
+    await saveSettings({
+      banned: on ? [...s.banned, exerciseId] : s.banned.filter((x) => x !== exerciseId),
+      favorites: s.favorites.filter((x) => x !== exerciseId),
+    });
+  }
+
+  /** Blok 4 minggu saat ini dan gerakan utamanya (untuk kartu "Blok baru"). */
+  async function blockStatus() {
+    const s = await requireSettings();
+    const today = now();
+    const index = blockIndexFor(s.programStart, today);
+    let block = s.block?.index === index ? s.block : undefined;
+    if (!block) {
+      const knee = await kneeStatus(undefined);
+      const ctx = await planContext({ dayType: 'A', today, deload: false, kneeReduce: knee.reduce });
+      block = selectExercises({
+        dayType: 'A',
+        today,
+        programStart: s.programStart,
+        states: ctx.states,
+        history: ctx.history!,
+        favorites: s.favorites,
+        banned: s.banned,
+        block: s.block,
+        knee: kneeAccess(await lastCSessions(), s.phase, knee.reduce),
+      }).block;
+    }
+    const start = blockStartFor(s.programStart, index);
+    const days: TrainingDay[] = ['A', 'B', 'C'];
+    const primaries = days.flatMap((day) =>
+      Object.entries(block!.assignments)
+        .filter(([slot]) => SLOT_BY_ID[slot]?.day === day)
+        .map(([slot, id]) => ({ day, slotId: slot, slot: SLOT_BY_ID[slot].label, exerciseId: id, name: EXERCISE_BY_ID[id]?.name ?? id })),
+    );
+    return {
+      index,
+      start,
+      end: addDays(start, index === 0 ? 13 : 27),
+      primaries,
+      showCard: index >= 1 && daysBetween(start, today) < 7 && s.blockCardSeen !== index,
+    };
+  }
+
+  /** tingkat lutut yang terbuka sekarang (untuk alasan kunci di Pustaka) */
+  async function kneeAccessNow() {
+    const s = await requireSettings();
+    const knee = await kneeStatus(undefined);
+    return kneeAccess(await lastCSessions(), s.phase, knee.reduce);
+  }
+
+  async function dismissBlockCard(index: number) {
+    await saveSettings({ blockCardSeen: index });
   }
 
   async function patchSession(id: number, fn: (s: SessionRecord) => void): Promise<SessionRecord> {
@@ -276,7 +453,7 @@ export function createCoach(db: CoachDB, now: () => string) {
       if (!def) continue;
       const sets = ex.logged.filter((l) => l.done);
       if (sets.length === 0) continue;
-      const state = states[def.id] ?? initialState(def);
+      const state = states[def.id] ?? ex.seed ?? initialState(def);
       updated.push(
         finalizeExercise(def, state, settings.equipment, {
           sets,
@@ -368,7 +545,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     return JSON.stringify(
       {
         app: 'my-coach',
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         settings: await db.settings.toArray(),
         sessions: await db.sessions.toArray(),
@@ -387,7 +564,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     }
     await db.transaction('rw', [db.settings, db.sessions, db.states, db.bodyweights], async () => {
       await Promise.all([db.settings.clear(), db.sessions.clear(), db.states.clear(), db.bodyweights.clear()]);
-      await db.settings.bulkPut(data.settings);
+      await db.settings.bulkPut(data.settings.map(withDefaults));
       await db.sessions.bulkPut(data.sessions);
       await db.states.bulkPut(data.states ?? []);
       await db.bodyweights.bulkPut(data.bodyweights ?? []);
@@ -416,7 +593,17 @@ export function createCoach(db: CoachDB, now: () => string) {
     kneeStatus,
     deloadStatus,
     previewPlan,
+    previewSwapOptions,
+    previewSwap,
     startSession,
+    swapOptions,
+    swapLocked,
+    swapExercise,
+    toggleFavorite,
+    toggleBanned,
+    blockStatus,
+    dismissBlockCard,
+    kneeAccessNow,
     logSet,
     unlogSet,
     setFeel,
@@ -439,6 +626,11 @@ export function createCoach(db: CoachDB, now: () => string) {
     resetAll,
     updateExerciseState,
   };
+}
+
+/** pengaturan lama/backup lama belum punya field bank gerakan */
+function withDefaults(s: Settings): Settings {
+  return { ...s, favorites: s.favorites ?? [], banned: s.banned ?? [] };
 }
 
 export type DayInfo = { dayType: DayType; seqIndex: number };

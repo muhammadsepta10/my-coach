@@ -113,7 +113,7 @@ describe('deload', () => {
 const ex = (id: string, mode: ExerciseDef['loadMode'], primary = false): ExerciseDef => ({
   id,
   name: id,
-  day: 'A',
+  slot: 'A1',
   block: 'main',
   kind: mode ? 'weighted' : 'reps',
   loadMode: mode,

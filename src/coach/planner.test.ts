@@ -14,10 +14,10 @@ function calibrated(id: string, load: number, over: Partial<ExerciseState> = {})
 const baseCtx = {
   eq,
   today: '2026-03-01',
-  programStart: '2026-01-01',
+  // blok 1 (setelah 2 minggu kalibrasi): gerakan utama masih gerakan asli
+  programStart: '2026-02-01',
   deload: false,
   kneeReduce: false,
-  stepUpOpen: false,
 };
 
 describe('planSession', () => {
@@ -48,11 +48,13 @@ describe('planSession', () => {
     expect(one.sets.filter((s) => s.kind === 'warmup')).toHaveLength(0);
   });
 
-  it('step-up tidak muncul selama lutut belum stabil', () => {
+  it('slot satu kaki (step-up dkk.) tidak muncul selama lutut belum stabil', () => {
     const plan = planSession({ ...baseCtx, dayType: 'C', states: {} });
-    expect(plan.exercises.some((e) => e.def.id === 'step-up')).toBe(false);
-    const open = planSession({ ...baseCtx, dayType: 'C', states: {}, stepUpOpen: true });
-    expect(open.exercises.some((e) => e.def.id === 'step-up')).toBe(true);
+    expect(plan.exercises.some((e) => e.slotId === 'C4')).toBe(false);
+    expect(plan.notes.join(' ')).toMatch(/terkunci/);
+    const open = planSession({ ...baseCtx, dayType: 'C', states: {}, kneeMediumOpen: true });
+    const c4 = open.exercises.find((e) => e.slotId === 'C4')!;
+    expect(['step-up', 'split-squat']).toContain(c4.def.id);
   });
 
   it('lutut nyeri: beban gerakan kaki dikurangi 20%', () => {
