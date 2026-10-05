@@ -6,7 +6,7 @@ import type { ExerciseDef, ExerciseState } from './types';
 const press: ExerciseDef = {
   id: 'press',
   name: 'Press',
-  day: 'A',
+  slot: 'A1',
   block: 'main',
   kind: 'weighted',
   loadMode: 'dumbbellPair',

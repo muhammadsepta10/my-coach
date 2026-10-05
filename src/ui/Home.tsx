@@ -1,13 +1,14 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useState } from 'react';
 import { addDays, daysBetween, today } from '../coach/dates';
-import { DAY_LABEL, MOBILITY_STEPS } from '../coach/program';
+import { DAY_LABEL, MOBILITY_STEPS, SLOT_BY_ID } from '../coach/program';
 import { SEQUENCES } from '../coach/rotation';
 import type { PlannedExercise } from '../coach/planner';
 import type { Settings } from '../data/db';
 import { coach } from '../data/instance';
 import { ExerciseAnimation } from './ExerciseAnimation';
-import { Button, Card, PainScale, Pill, loadText, targetText } from './common';
+import { SwapSheet } from './SwapSheet';
+import { Button, Card, PainScale, Pill, formatDate, loadText, targetText } from './common';
 
 export function Home({ settings }: { settings: Settings }) {
   const plan = useLiveQuery(() => coach.previewPlan(), []);
@@ -16,7 +17,9 @@ export function Home({ settings }: { settings: Settings }) {
   const weights = useLiveQuery(() => coach.bodyWeights(), []);
   const protein = useLiveQuery(() => coach.proteinTarget(), []);
   const history = useLiveQuery(() => coach.history(), []);
+  const block = useLiveQuery(() => coach.blockStatus(), []);
   const [askKnee, setAskKnee] = useState(false);
+  const [swap, setSwap] = useState<number | null>(null);
 
   const t = today();
   const week = Math.floor(daysBetween(settings.programStart, t) / 7) + 1;
@@ -41,6 +44,7 @@ export function Home({ settings }: { settings: Settings }) {
 
       {pendingKnee && <KneeNextDayCard sessionId={pendingKnee.id!} />}
       {phase2 && <Phase2Card />}
+      {block?.showCard && <BlockCard block={block} />}
 
       {plan?.deload && (
         <Card className="border-amber-700/60 bg-amber-950/30">
@@ -68,8 +72,8 @@ export function Home({ settings }: { settings: Settings }) {
             </ul>
           ) : (
             <ul className="divide-y divide-slate-800">
-              {plan.exercises.map((e) => (
-                <PlanRow key={e.def.id} e={e} />
+              {plan.exercises.map((e, i) => (
+                <PlanRow key={e.def.id} e={e} onSwap={() => setSwap(i)} />
               ))}
             </ul>
           )}
@@ -86,6 +90,14 @@ export function Home({ settings }: { settings: Settings }) {
       )}
 
       {askKnee && <KneePreDialog onCancel={() => setAskKnee(false)} />}
+      {swap !== null && plan?.exercises[swap] && (
+        <SwapSheet
+          title={`${slotLabel(plan.exercises[swap])} · sekarang: ${plan.exercises[swap].displayName}`}
+          load={() => coach.previewSwapOptions(swap)}
+          onPick={(id) => coach.previewSwap(plan.exercises[swap].slotId, id)}
+          onClose={() => setSwap(null)}
+        />
+      )}
 
       {needWeigh && <WeighCard last={lastWeight?.kg} />}
 
@@ -102,7 +114,11 @@ export function Home({ settings }: { settings: Settings }) {
   );
 }
 
-function PlanRow({ e }: { e: PlannedExercise }) {
+function slotLabel(e: PlannedExercise): string {
+  return SLOT_BY_ID[e.slotId]?.label ?? (e.slotId === 'core:anti' ? 'Core (anti-gerakan)' : 'Core');
+}
+
+function PlanRow({ e, onSwap }: { e: PlannedExercise; onSwap: () => void }) {
   const work = e.sets.filter((s) => s.kind !== 'warmup');
   const first = work[0];
   return (
@@ -128,7 +144,41 @@ function PlanRow({ e }: { e: PlannedExercise }) {
           )}
         </p>
       </div>
+      <button className="ml-auto shrink-0 text-xs text-sky-400 px-2 py-2" aria-label={`Ganti gerakan ${e.displayName}`} onClick={onSwap}>
+        ⇄ Ganti
+      </button>
     </li>
+  );
+}
+
+function BlockCard({ block }: { block: Awaited<ReturnType<typeof coach.blockStatus>> }) {
+  return (
+    <Card className="space-y-3 border-violet-800 bg-violet-950/30">
+      <div>
+        <p className="font-semibold text-violet-300">Blok baru #{block.index} 🔄</p>
+        <p className="text-sm text-violet-100/80">
+          {formatDate(block.start)} – {formatDate(block.end)}. Gerakan utama berikut tetap sama selama 4 minggu supaya progres beban terukur.
+          Gerakan pelengkap & core tetap berganti tiap sesi.
+        </p>
+      </div>
+      {(['A', 'B', 'C'] as const).map((d) => (
+        <div key={d}>
+          <p className="text-xs text-slate-400">{DAY_LABEL[d]}</p>
+          <ul className="text-sm list-disc pl-5">
+            {block.primaries
+              .filter((p) => p.day === d)
+              .map((p) => (
+                <li key={p.slotId}>
+                  <span className="text-slate-400">{p.slot}:</span> {p.name}
+                </li>
+              ))}
+          </ul>
+        </div>
+      ))}
+      <Button variant="secondary" className="w-full" onClick={() => coach.dismissBlockCard(block.index)}>
+        Oke, mengerti
+      </Button>
+    </Card>
   );
 }
 

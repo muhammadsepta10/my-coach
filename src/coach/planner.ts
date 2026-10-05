@@ -4,8 +4,9 @@
  */
 import { daysBetween } from './dates';
 import { CALIBRATION_DAYS, DELOAD_LOAD_FACTOR, deloadSets } from './deload';
-import { KNEE_LOAD_FACTOR } from './knee';
-import { family, orderExercises } from './ordering';
+import { epley, loadForReps } from './e1rm';
+import { KNEE_LOAD_FACTOR, type KneeAccess } from './knee';
+import { family } from './ordering';
 import {
   type EquipmentConfig,
   type LoadMode,
@@ -13,8 +14,9 @@ import {
   loadoutFor,
   roundDownToAchievable,
 } from './plates';
-import { exercisesForDay } from './program';
+import { EXERCISES, EXERCISE_BY_ID } from './program';
 import { initialState, progress } from './progression';
+import { type BlockInfo, type SelectionHistory, assembledAfter, selectExercises, slotAlternatives } from './selection';
 import type { DayType, ExerciseDef, ExerciseState, Feel } from './types';
 import { warmupSets } from './warmup';
 
@@ -22,6 +24,8 @@ export const AMRAP_INTERVAL_DAYS = 28;
 /** sisa repetisi yang diminta selama 2 minggu kalibrasi */
 export const CALIBRATION_PHASE_RIR = 3;
 export const NORMAL_RIR = 2;
+/** perkiraan dari gerakan saudara dibuat sedikit lebih ringan */
+export const SIBLING_SAFETY = 0.9;
 
 export type SetKind = 'warmup' | 'calibration' | 'work' | 'amrap';
 
@@ -36,6 +40,9 @@ export interface PlannedSet {
 
 export interface PlannedExercise {
   def: ExerciseDef;
+  slotId: string;
+  /** state awal hasil perkiraan dari gerakan saudara (gerakan belum pernah dilakukan) */
+  seed?: ExerciseState;
   displayName: string;
   sets: PlannedSet[];
   restSec: number;
@@ -50,6 +57,10 @@ export interface PlannedSession {
   deload: boolean;
   notes: string[];
   exercises: PlannedExercise[];
+  /** blok yang berlaku (simpan kalau `blockChanged`) */
+  block?: BlockInfo;
+  blockChanged: boolean;
+  rotatedAway: string[];
 }
 
 export interface PlanContext {
@@ -60,7 +71,44 @@ export interface PlanContext {
   programStart: string;
   deload: boolean;
   kneeReduce: boolean;
-  stepUpOpen: boolean;
+  /** tingkat lutut medium/high sudah terbuka */
+  kneeMediumOpen?: boolean;
+  kneeHighOpen?: boolean;
+  history?: SelectionHistory;
+  favorites?: string[];
+  banned?: string[];
+  block?: BlockInfo;
+  overrides?: Record<string, string>;
+}
+
+function kneeOf(ctx: PlanContext): KneeAccess {
+  return { reduce: ctx.kneeReduce, mediumOpen: !!ctx.kneeMediumOpen, highOpen: !!ctx.kneeHighOpen };
+}
+
+/**
+ * Beban awal gerakan baru dari gerakan saudara yang sudah punya e1RM.
+ * Relasi dibaca dua arah (A→B dengan rasio r berarti B→A dengan 1/r).
+ */
+export function siblingEstimate(
+  def: ExerciseDef,
+  states: Record<string, ExerciseState>,
+  eq: EquipmentConfig,
+  rir: number,
+): { state: ExerciseState; from: ExerciseDef } | undefined {
+  if (def.kind !== 'weighted' || !def.loadMode) return undefined;
+  const refs = [
+    ...(def.siblings ?? []),
+    ...EXERCISES.flatMap((o) => (o.siblings ?? []).filter((r) => r.id === def.id).map((r) => ({ id: o.id, ratio: 1 / r.ratio }))),
+  ];
+  for (const ref of refs) {
+    const sib = states[ref.id];
+    if (!sib?.e1rm) continue;
+    const e1rm = sib.e1rm * ref.ratio * SIBLING_SAFETY;
+    const base = initialState(def);
+    const load = roundDownToAchievable(eq, def.loadMode, loadForReps(e1rm, base.repMin, rir));
+    return { state: { ...base, calibrated: true, load, e1rm: epley(load, base.repMin + rir) }, from: EXERCISE_BY_ID[ref.id] };
+  }
+  return undefined;
 }
 
 export function inCalibrationPhase(programStart: string, today: string): boolean {
@@ -79,26 +127,68 @@ export function planSession(ctx: PlanContext): PlannedSession {
   if (ctx.kneeReduce && ctx.dayType === 'C') notes.push('Lutut sedang sensitif: beban gerakan kaki dikurangi 20%.');
 
   if (ctx.dayType === 'AKTIF') {
-    return { dayType: 'AKTIF', inCalibrationPhase: calib, deload: ctx.deload, notes, exercises: [] };
+    return { dayType: 'AKTIF', inCalibrationPhase: calib, deload: ctx.deload, notes, exercises: [], blockChanged: false, rotatedAway: [] };
   }
 
-  const all = exercisesForDay(ctx.dayType);
-  const main = orderExercises(all.filter((d) => d.block === 'main' && (!d.kneeGated || ctx.stepUpOpen)));
-  const core = all.filter((d) => d.block === 'core');
-  if (ctx.dayType === 'C' && !ctx.stepUpOpen) {
-    notes.push('Step-up masih terkunci sampai lutut stabil (nyeri ≤2 di 2 sesi kaki berturut-turut).');
-  }
+  const sel = selectExercises({
+    dayType: ctx.dayType,
+    today: ctx.today,
+    programStart: ctx.programStart,
+    states: ctx.states,
+    history: ctx.history ?? { lastBySlot: {}, lastCore: [] },
+    favorites: ctx.favorites ?? [],
+    banned: ctx.banned ?? [],
+    block: ctx.block,
+    knee: kneeOf(ctx),
+    overrides: ctx.overrides,
+  });
+  notes.push(...sel.notes);
 
   let warmupGiven = false;
-  const exercises = [...main, ...core].map((def): PlannedExercise => {
-    const state = ctx.states[def.id] ?? initialState(def);
-    const p = planExercise(def, state, ctx, calib, !warmupGiven);
+  const exercises = sel.picks.map(({ def, slotId }): PlannedExercise => {
+    const p = planSlotExercise(ctx, def, slotId, !warmupGiven);
+    const state = ctx.states[def.id] ?? p.seed;
     if (p.sets.some((s) => s.kind === 'warmup' || s.kind === 'calibration')) warmupGiven = true;
-    if (def.kind === 'weighted' && state.calibrated && state.load !== undefined) warmupGiven = true;
+    if (def.kind === 'weighted' && state?.calibrated && state.load !== undefined) warmupGiven = true;
     return p;
   });
 
-  return { dayType: ctx.dayType, inCalibrationPhase: calib, deload: ctx.deload, notes, exercises };
+  return {
+    dayType: ctx.dayType,
+    inCalibrationPhase: calib,
+    deload: ctx.deload,
+    notes,
+    exercises,
+    block: sel.block,
+    blockChanged: sel.blockChanged,
+    rotatedAway: sel.rotatedAway,
+  };
+}
+
+/** Rencana satu gerakan untuk satu slot (dipakai juga saat ganti gerakan). */
+export function planSlotExercise(ctx: PlanContext, def: ExerciseDef, slotId: string, giveWarmup: boolean): PlannedExercise {
+  const calib = inCalibrationPhase(ctx.programStart, ctx.today);
+  let state = ctx.states[def.id];
+  let seed: ExerciseState | undefined;
+  const extra: string[] = [];
+  if (!state) {
+    const est = siblingEstimate(def, ctx.states, ctx.eq, targetRir(ctx.programStart, ctx.today));
+    if (est) {
+      seed = est.state;
+      state = est.state;
+      extra.push(`Beban awal diperkirakan dari ${est.from.name}. Terlalu berat/ringan? Sesuaikan bebannya dan beri penilaian rasa — coach mengoreksi di sesi berikutnya.`);
+    }
+  }
+  const p = planExercise(def, state ?? initialState(def), ctx, calib, giveWarmup);
+  return { ...p, slotId, seed, notes: [...p.notes, ...extra] };
+}
+
+/** Alternatif untuk tombol "Ganti gerakan", lengkap dengan perkiraan bebannya. */
+export function planAlternatives(ctx: PlanContext, slotId: string, currentId: string, sessionDefs: ExerciseDef[]): PlannedExercise[] {
+  const assembled = assembledAfter(sessionDefs.filter((d) => d.block === 'main'));
+  return slotAlternatives(slotId, currentId, assembled, { banned: ctx.banned ?? [], knee: kneeOf(ctx) }).map((d) =>
+    planSlotExercise(ctx, d, slotId, false),
+  );
 }
 
 function planExercise(
@@ -107,7 +197,7 @@ function planExercise(
   ctx: PlanContext,
   calib: boolean,
   giveWarmup: boolean,
-): PlannedExercise {
+): Omit<PlannedExercise, 'slotId' | 'seed'> {
   const notes: string[] = [];
   const setCount = ctx.deload ? deloadSets(def.sets) : def.sets;
   const displayName = def.variants ? def.variants[Math.min(state.variant, def.variants.length - 1)] : def.name;

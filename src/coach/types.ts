@@ -11,10 +11,38 @@ export type ExerciseKind =
   /** tahan (detik) */
   | 'timed';
 
+export type TrainingDay = Exclude<DayType, 'AKTIF'>;
+
+/** beban gerakan pada lutut: low selalu boleh, medium/high dibuka bertahap */
+export type KneeTier = 'low' | 'medium' | 'high';
+
+export type SlotRole = 'primary' | 'accessory' | 'optional';
+
+/** Fungsi tetap dalam satu hari latihan (mis. "Dorong dada"), diisi salah satu kandidat. */
+export interface SlotDef {
+  id: string;
+  label: string;
+  day: TrainingDay;
+  role: SlotRole;
+  /** kandidat gerakan; yang pertama = gerakan default (⭐) */
+  candidates: string[];
+}
+
+/**
+ * Gerakan "saudara" untuk memperkirakan beban awal:
+ * e1RM gerakan ini ≈ e1RM saudara × ratio (sudah termasuk beda mode alat,
+ * mis. barbel total vs berat satu dumbel).
+ */
+export interface SiblingRef {
+  id: string;
+  ratio: number;
+}
+
 export interface ExerciseDef {
   id: string;
   name: string;
-  day: Exclude<DayType, 'AKTIF'>;
+  /** id slot, atau 'core' untuk kolam core bersama */
+  slot: string;
   block: 'main' | 'core';
   kind: ExerciseKind;
   loadMode?: LoadMode;
@@ -25,12 +53,18 @@ export interface ExerciseDef {
   repMax: number;
   perSide?: boolean;
   restSec: number;
-  /** gerakan utama: tetap di awal sesi */
+  /** gerakan utama: tetap di awal sesi (diturunkan dari peran slot) */
   primary?: boolean;
   lowerBody?: boolean;
+  /** diturunkan dari peran slot */
   optional?: boolean;
-  /** terkunci sampai lutut stabil */
-  kneeGated?: boolean;
+  /** tingkat beban lutut untuk gerakan kaki */
+  kneeTier?: KneeTier;
+  /** core: anti-gerakan (plank dkk.) atau lainnya */
+  coreType?: 'anti' | 'other';
+  /** core carry: hanya kalau dumbel sedang terpasang */
+  carry?: boolean;
+  siblings?: SiblingRef[];
   /** beban set kalibrasi pertama (kg) */
   calibrationLoad?: number;
   /** level variasi bodyweight, dari termudah */

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { family, setupInstruction } from '../coach/planner';
 import { achievableLoads, formatKg } from '../coach/plates';
-import { DAY_LABEL, EXERCISE_BY_ID, MOBILITY_STEPS, WARMUP_STEPS, youtubeUrl } from '../coach/program';
+import { DAY_LABEL, EXERCISE_BY_ID, MOBILITY_STEPS, SLOT_BY_ID, WARMUP_STEPS, youtubeUrl } from '../coach/program';
+import { slotIdOf } from '../coach/selection';
 import type { Feel } from '../coach/types';
 import type { SessionExercise, SessionRecord, Settings } from '../data/db';
 import { coach } from '../data/instance';
 import { ExerciseAnimation } from './ExerciseAnimation';
+import { SwapSheet } from './SwapSheet';
 import { Button, Card, PainScale, Pill, Stepper, loadText, targetText } from './common';
 import { beep, useWakeLock } from './feedback';
 
@@ -14,8 +16,8 @@ export function Workout({ session, settings }: { session: SessionRecord; setting
   if (session.dayType === 'AKTIF') return <ActiveDay session={session} />;
   if (!session.warmupDone) return <Warmup session={session} />;
   if (session.cursor >= session.exercises.length) return <Finish session={session} />;
-  // key: reset input set setiap pindah gerakan
-  return <ExerciseStep key={session.cursor} session={session} settings={settings} />;
+  // key: reset input set setiap pindah atau ganti gerakan
+  return <ExerciseStep key={`${session.cursor}-${session.exercises[session.cursor].exerciseId}`} session={session} settings={settings} />;
 }
 
 function Shell({ session, children, title }: { session: SessionRecord; children: React.ReactNode; title?: string }) {
@@ -139,6 +141,8 @@ function ExerciseStep({ session, settings }: { session: SessionRecord; settings:
   const def = EXERCISE_BY_ID[ex.exerciseId];
   const [rest, setRest] = useState<Rest | null>(null);
   const [showHow, setShowHow] = useState(false);
+  const [swapping, setSwapping] = useState(false);
+  const canSwap = !coach.swapLocked(ex);
   const allDone = ex.logged.every((l) => l.done);
   const nextIdx = ex.logged.findIndex((l) => !l.done);
   const currentLoad = ex.planned[nextIdx === -1 ? ex.planned.length - 1 : nextIdx]?.load ?? ex.planned.find((p) => p.kind === 'work')?.load;
@@ -179,7 +183,22 @@ function ExerciseStep({ session, settings }: { session: SessionRecord; settings:
             {session.deload && <Pill tone="amber">deload</Pill>}
             <Pill>istirahat {ex.restSec} dtk</Pill>
           </div>
+          {canSwap ? (
+            <button className="mt-2 text-sm text-sky-400" onClick={() => setSwapping(true)}>
+              ⇄ Ganti gerakan
+            </button>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500">Mau ganti gerakan? Urungkan dulu set yang sudah dicatat (tombol "ubah").</p>
+          )}
         </div>
+        {swapping && (
+          <SwapSheet
+            title={`${SLOT_BY_ID[ex.slotId ?? slotIdOf(def)]?.label ?? 'Core'} · sekarang: ${ex.displayName}`}
+            load={() => coach.swapOptions(session.id!, idx)}
+            onPick={(id) => coach.swapExercise(session.id!, idx, id)}
+            onClose={() => setSwapping(false)}
+          />
+        )}
 
         {ex.notes.map((n) => (
           <p key={n} className="text-sm text-sky-200/90 bg-sky-500/10 rounded-lg px-3 py-2">
