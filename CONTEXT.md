@@ -74,3 +74,9 @@ Cek nyeri ≤2 di sejumlah sesi berturut-turut yang membebani area cedera; dasar
 
 **Akut sesi**:
 Perlakuan Akut khusus untuk satu sesi karena cek nyeri ≥4, tanpa mengubah status cedera tersimpan.
+
+## Asisten
+
+**Asisten**:
+Model bahasa di HP yang menjelaskan keputusan coach dan menerjemahkan ucapan bebas pengguna menjadi data; tidak pernah memutuskan beban, gerakan, atau status cedera.
+_Avoid_: AI coach, chatbot, LLM (di teks untuk pengguna)
