@@ -59,7 +59,7 @@ Status cedera di mana hanya gerakan yang ringan untuk areanya yang boleh, dibuka
 Status cedera di mana semua gerakan boleh, tetapi nyeri tetap dipantau.
 
 **Cek nyeri**:
-Skor nyeri 0–10 untuk cedera aktif, ditanya sebelum sesi, sesudah sesi yang membebani areanya, dan keesokan harinya; dipakai coach untuk menyarankan perubahan status.
+Skor nyeri 0–10 untuk cedera aktif, ditanya sebelum sesi, sesudah sesi yang membebani areanya, dan keesokan harinya, atau dilaporkan pengguna kapan saja selama sesi; dipakai coach untuk menyarankan perubahan status.
 _Avoid_: Knee check (khusus lutut)
 
 **Cedera aktif**:
@@ -73,7 +73,7 @@ _Avoid_: Knee tier, tingkat lutut (kini berlaku untuk semua area)
 Cek nyeri ≤2 di sejumlah sesi berturut-turut yang membebani area cedera; dasar membuka gerakan sedang (2 sesi) dan menyarankan status Pulih (4 sesi).
 
 **Akut sesi**:
-Perlakuan Akut khusus untuk satu sesi karena cek nyeri ≥4, tanpa mengubah status cedera tersimpan.
+Perlakuan Akut khusus untuk satu sesi karena cek nyeri ≥4 (sebelum atau di tengah sesi; di tengah sesi berlaku untuk gerakan yang tersisa), tanpa mengubah status cedera tersimpan.
 
 ## Asisten
 
@@ -89,5 +89,5 @@ _Avoid_: Penjelasan AI, reasoning
 Kalimat baku yang menyampaikan alasan keputusan atau mengenali input tanpa Asisten; selalu tersedia walau model tidak diunduh.
 
 **Ringkasan**:
-Teks rangkuman satu sesi atau satu periode yang dibuat Asisten saat diminta pengguna dan disimpan di riwayat.
-_Avoid_: Recap, laporan
+Teks rangkuman yang dibuat Asisten saat diminta pengguna dan disimpan di riwayat; ada tiga jenis: Ringkasan sesi, Ringkasan 7 hari (7 hari terakhir), dan Ringkasan blok (ditawarkan saat blok selesai).
+_Avoid_: Recap, laporan, ringkasan mingguan
