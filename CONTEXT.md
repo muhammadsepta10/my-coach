@@ -80,3 +80,14 @@ Perlakuan Akut khusus untuk satu sesi karena cek nyeri ≥4, tanpa mengubah stat
 **Asisten**:
 Model bahasa di HP yang menjelaskan keputusan coach dan menerjemahkan ucapan bebas pengguna menjadi data; tidak pernah memutuskan beban, gerakan, atau status cedera.
 _Avoid_: AI coach, chatbot, LLM (di teks untuk pengguna)
+
+**Alasan keputusan**:
+Catatan terstruktur yang dibuat coach untuk setiap keputusannya (beban naik/turun, deload, gerakan terkunci, gerakan diganti) beserta angka dan aturan yang dipakai; satu-satunya sumber yang boleh dijelaskan Asisten.
+_Avoid_: Penjelasan AI, reasoning
+
+**Teks templat**:
+Kalimat baku yang menyampaikan alasan keputusan atau mengenali input tanpa Asisten; selalu tersedia walau model tidak diunduh.
+
+**Ringkasan**:
+Teks rangkuman satu sesi atau satu periode yang dibuat Asisten saat diminta pengguna dan disimpan di riwayat.
+_Avoid_: Recap, laporan
