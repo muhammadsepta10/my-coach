@@ -1,3 +1,4 @@
+import type { AreaLoad } from './injury';
 import type { LoadMode } from './plates';
 
 export type DayType = 'A' | 'B' | 'C' | 'AKTIF';
@@ -12,9 +13,6 @@ export type ExerciseKind =
   | 'timed';
 
 export type TrainingDay = Exclude<DayType, 'AKTIF'>;
-
-/** beban gerakan pada lutut: low selalu boleh, medium/high dibuka bertahap */
-export type KneeTier = 'low' | 'medium' | 'high';
 
 export type SlotRole = 'primary' | 'accessory' | 'optional';
 
@@ -58,8 +56,8 @@ export interface ExerciseDef {
   lowerBody?: boolean;
   /** diturunkan dari peran slot */
   optional?: boolean;
-  /** tingkat beban lutut untuk gerakan kaki */
-  kneeTier?: KneeTier;
+  /** beban area tubuh yang dibebani gerakan ini */
+  load?: AreaLoad;
   /** core: anti-gerakan (plank dkk.) atau lainnya */
   coreType?: 'anti' | 'other';
   /** core carry: hanya kalau dumbel sedang terpasang */

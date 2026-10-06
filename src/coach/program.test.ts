@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { exerciseFrames } from '../ui/exerciseImages';
+import { BODY_AREAS } from './injury';
 import { CORE_POOL, DEFAULT_IDS, EXERCISES, EXERCISE_BY_ID, SLOTS, SLOT_BY_ID, exercisesForDay } from './program';
 
 describe('program', () => {
@@ -35,8 +36,8 @@ describe('program', () => {
     }
   });
 
-  it('bank: ±53 gerakan, 23 gerakan asli tetap ada', () => {
-    expect(EXERCISES).toHaveLength(53);
+  it('bank: 73 gerakan, 23 gerakan asli tetap ada', () => {
+    expect(EXERCISES).toHaveLength(73);
     expect(DEFAULT_IDS.size).toBe(23);
   });
 
@@ -47,21 +48,53 @@ describe('program', () => {
     }
     for (const s of SLOTS) {
       for (const id of s.candidates) expect(EXERCISE_BY_ID[id], id).toBeDefined();
-      expect(DEFAULT_IDS.has(s.candidates[0]), `${s.id} default`).toBe(true);
+      if (s.id !== 'C6') expect(DEFAULT_IDS.has(s.candidates[0]), `${s.id} default`).toBe(true);
     }
   });
 
-  it('slot primer & aksesori punya 2–3 alternatif', () => {
+  it('slot primer & aksesori punya minimal 2 alternatif', () => {
     for (const s of SLOTS.filter((x) => x.role !== 'optional')) {
       expect(s.candidates.length, s.id).toBeGreaterThanOrEqual(2);
-      expect(s.candidates.length, s.id).toBeLessThanOrEqual(3);
     }
   });
 
-  it('gerakan kaki punya tingkat beban lutut', () => {
-    for (const e of EXERCISES.filter((x) => SLOT_BY_ID[x.slot]?.day === 'C')) {
-      expect(e.kneeTier, e.id).toBeDefined();
+  it('setiap gerakan punya beban area yang valid', () => {
+    for (const e of EXERCISES) {
+      const entries = Object.entries(e.load ?? {});
+      expect(entries.length, e.id).toBeGreaterThan(0);
+      for (const [area, level] of entries) {
+        expect(BODY_AREAS, `${e.id}: ${area}`).toContain(area);
+        expect(['ringan', 'sedang', 'berat'], `${e.id}: ${area}`).toContain(level);
+      }
     }
+  });
+
+  it('gerakan hari C membebani minimal satu area kaki/pinggul', () => {
+    const legAreas = ['lutut', 'engkel', 'pinggul', 'punggung-bawah', 'tulang-kering'];
+    for (const e of EXERCISES.filter((x) => SLOT_BY_ID[x.slot]?.day === 'C')) {
+      expect(Object.keys(e.load ?? {}).some((a) => legAreas.includes(a)), e.id).toBe(true);
+    }
+  });
+
+  it('20 gerakan kaki baru ada di slotnya', () => {
+    const baru: Record<string, string[]> = {
+      C1: ['sumo-goblet-squat', 'heels-elevated-goblet-squat', 'tempo-goblet-box-squat'],
+      C2: ['sumo-db-deadlift', 'b-stance-db-rdl', 'db-good-morning'],
+      C3: ['barbell-hip-thrust', 'db-frog-pump', 'b-stance-db-hip-thrust'],
+      C4: ['bulgarian-split-squat', 'lateral-lunge', 'cossack-squat', 'step-down'],
+      C5: ['tibialis-raise', 'donkey-calf-raise'],
+      C6: ['elevated-hamstring-bridge', 'prone-db-leg-curl', 'side-lying-leg-raise', 'clamshell', 'copenhagen-plank'],
+    };
+    expect(Object.values(baru).flat()).toHaveLength(20);
+    for (const [slot, ids] of Object.entries(baru)) {
+      for (const id of ids) expect(SLOT_BY_ID[slot].candidates, `${slot} ${id}`).toContain(id);
+    }
+  });
+
+  it('slot baru Hamstring & paha samping: aksesori hari C dengan default Elevated Hamstring Bridge', () => {
+    expect(SLOT_BY_ID.C6).toMatchObject({ day: 'C', role: 'accessory', label: 'Hamstring & paha samping' });
+    expect(SLOT_BY_ID.C6.candidates[0]).toBe('elevated-hamstring-bridge');
+    expect(SLOT_BY_ID.C5.label).toBe('Betis & tulang kering');
   });
 
   it('kolam core: 10 gerakan, anti-gerakan & lainnya, carry butuh dumbel', () => {

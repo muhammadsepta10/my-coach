@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadForReps } from './e1rm';
-import { kneeAccess, kneeTierAllowed } from './knee';
+import { type InjuryState, lockReason } from './injury';
 import { DEFAULT_EQUIPMENT, achievableLoads } from './plates';
 import { NORMAL_RIR, planAlternatives, planSession, siblingEstimate } from './planner';
 import { EXERCISE_BY_ID, SLOTS, slotsForDay } from './program';
@@ -17,8 +17,13 @@ import {
 import type { ExerciseState, TrainingDay } from './types';
 
 const eq = DEFAULT_EQUIPMENT;
-const open = { reduce: false, mediumOpen: true, highOpen: true };
-const closed = { reduce: false, mediumOpen: false, highOpen: false };
+function cedera(area: InjuryState['injury']['area'], status: InjuryState['injury']['status'], over: Partial<InjuryState> = {}): InjuryState {
+  return { injury: { id: `${area}-kiri`, area, side: 'kiri', status, since: '2026-01-01' }, stableSessions: 0, acuteToday: false, ...over };
+}
+/** lutut kiri baru mulai pulih: hanya gerakan ringan untuk lutut */
+const closed = [cedera('lutut', 'pemulihan')];
+/** tanpa cedera: semua gerakan boleh */
+const open: InjuryState[] = [];
 
 function input(over: Partial<SelectionInput> = {}): SelectionInput {
   return {
@@ -29,7 +34,7 @@ function input(over: Partial<SelectionInput> = {}): SelectionInput {
     history: { lastBySlot: {}, lastCore: [] },
     favorites: [],
     banned: [],
-    knee: closed,
+    injuries: closed,
     ...over,
   };
 }
@@ -42,7 +47,7 @@ function calibrated(id: string, load: number, over: Partial<ExerciseState> = {})
 
 describe('selectExercises — slot', () => {
   it.each(['A', 'B', 'C'] as TrainingDay[])('hari %s: tiap slot terisi tepat sekali + 2 core', (day) => {
-    const sel = selectExercises(input({ dayType: day, knee: open }));
+    const sel = selectExercises(input({ dayType: day, injuries: open }));
     const slots = sel.picks.map((p) => p.slotId);
     for (const s of slotsForDay(day)) expect(slots.filter((x) => x === s.id)).toHaveLength(1);
     expect(sel.picks.filter((p) => p.def.block === 'core')).toHaveLength(2);
@@ -134,7 +139,7 @@ describe('selectExercises — blok 4 minggu', () => {
 
   it('blok baru → slot primer berganti ke kandidat berikutnya', () => {
     const block: BlockInfo = { index: 1, start: '2026-02-15', assignments: { A1: 'floor-press', A3: 'seated-ohp', C1: 'goblet-box-squat' } };
-    const sel = selectExercises(input({ block, today: '2026-03-20', knee: open }));
+    const sel = selectExercises(input({ block, today: '2026-03-20', injuries: open }));
     expect(sel.block.index).toBe(2);
     expect(sel.blockChanged).toBe(true);
     expect(sel.block.assignments.A1).toBe('barbell-floor-press');
@@ -144,9 +149,10 @@ describe('selectExercises — blok 4 minggu', () => {
 
   it('rotasi blok melewati gerakan yang tidak boleh untuk lutut', () => {
     const block: BlockInfo = { index: 2, start: '2026-03-15', assignments: { C1: 'suitcase-box-squat' } };
-    const sel = selectExercises(input({ block, programStart: '2026-01-01', today: '2026-03-20', knee: closed }));
+    const sel = selectExercises(input({ block, programStart: '2026-01-01', today: '2026-03-20', injuries: closed }));
     expect(sel.block.index).toBe(3);
-    expect(sel.block.assignments.C1).toBe('goblet-box-squat');
+    // goblet-squat (lutut sedang) & heels-elevated (berat) dilewati
+    expect(sel.block.assignments.C1).toBe('sumo-goblet-squat');
   });
 
   it('gerakan primer yang mandek diganti lebih cepat dan dicatat', () => {
@@ -167,41 +173,69 @@ describe('selectExercises — blok 4 minggu', () => {
   });
 });
 
-describe('selectExercises — lutut', () => {
-  it('tingkat lutut: low selalu, medium setelah 2 sesi stabil, high di fase 2 setelah 4', () => {
-    const good = Array(4).fill({ kneePre: 1, kneePost: 2 });
-    expect(kneeAccess(good.slice(0, 1), 1, false)).toMatchObject({ mediumOpen: false, highOpen: false });
-    expect(kneeAccess(good.slice(0, 2), 1, false)).toMatchObject({ mediumOpen: true, highOpen: false });
-    expect(kneeAccess(good, 1, false)).toMatchObject({ mediumOpen: true, highOpen: false });
-    expect(kneeAccess(good, 2, false)).toMatchObject({ mediumOpen: true, highOpen: true });
-    expect(kneeAccess([...good, { kneePre: 3, kneePost: 1 }], 2, false).highOpen).toBe(false);
-    expect(kneeTierAllowed('high', kneeAccess(good, 2, true))).toBe(false);
-    expect(kneeTierAllowed('low', kneeAccess([], 1, true))).toBe(true);
-  });
+describe('selectExercises — cedera', () => {
+  const lututBeban = (p: { def: { load?: Record<string, string> } }) => p.def.load?.lutut;
 
-  it('lutut belum stabil: gerakan medium/high tidak pernah dipilih', () => {
+  it('Pemulihan: hanya gerakan ringan untuk area itu', () => {
     for (const today of ['2026-03-01', '2026-03-02', '2026-03-03', '2026-03-04']) {
-      const sel = selectExercises(input({ dayType: 'C', today, favorites: ['goblet-squat', 'reverse-lunge'] }));
-      for (const p of sel.picks) expect(p.def.kneeTier ?? 'low').toBe('low');
+      const sel = selectExercises(input({ dayType: 'C', today, favorites: ['goblet-squat', 'reverse-lunge', 'split-squat'] }));
+      for (const p of sel.picks) expect([undefined, 'ringan']).toContain(lututBeban(p));
     }
   });
 
-  it('pengurangan lutut aktif: hanya tingkat low walau sudah terbuka', () => {
+  it('Pemulihan: gerakan sedang terbuka setelah nyeri stabil 2 sesi, berat tetap tidak', () => {
+    const stabil = [cedera('lutut', 'pemulihan', { stableSessions: 2 })];
+    const sel = selectExercises(input({ dayType: 'C', injuries: stabil, favorites: ['split-squat'] }));
+    expect(sel.picks.find((p) => p.slotId === 'C4')!.def.id).toBe('split-squat');
+    const berat = selectExercises(input({ dayType: 'C', injuries: stabil, favorites: ['reverse-lunge'] }));
+    expect(berat.picks.some((p) => lututBeban(p) === 'berat')).toBe(false);
+  });
+
+  it('Pulih: gerakan berat boleh', () => {
+    const sel = selectExercises(input({ dayType: 'C', injuries: [cedera('lutut', 'pulih')], favorites: ['reverse-lunge'] }));
+    expect(ids(sel)).toContain('reverse-lunge');
+  });
+
+  it('Akut: tidak ada gerakan yang membebani area itu sama sekali', () => {
+    const sel = selectExercises(input({ dayType: 'C', injuries: [cedera('lutut', 'akut')] }));
+    for (const p of sel.picks) expect(lututBeban(p)).toBeUndefined();
+  });
+
+  it('nyeri ≥4 hari ini (Akut sesi) berlaku seperti Akut walau status tersimpan Pulih', () => {
+    const sel = selectExercises(input({ dayType: 'C', injuries: [cedera('lutut', 'pulih', { acuteToday: true })] }));
+    for (const p of sel.picks) expect(lututBeban(p)).toBeUndefined();
+  });
+
+  it('cedera di area lain ikut membatasi hari lain (pergelangan tangan Akut di hari A)', () => {
+    const sel = selectExercises(input({ injuries: [cedera('pergelangan-tangan', 'akut')] }));
+    for (const p of sel.picks) expect(p.def.load?.['pergelangan-tangan']).toBeUndefined();
+  });
+
+  it('beberapa cedera digabung', () => {
+    const sel = selectExercises(input({ dayType: 'C', injuries: [cedera('lutut', 'akut'), cedera('punggung-bawah', 'akut')] }));
+    for (const p of sel.picks) {
+      expect(p.def.load?.lutut).toBeUndefined();
+      expect(p.def.load?.['punggung-bawah']).toBeUndefined();
+    }
+  });
+
+  it('slot tanpa kandidat aman dilewati dengan catatan yang menyebut cederanya', () => {
+    const sel = selectExercises(input({ dayType: 'C', injuries: [cedera('lutut', 'akut')] }));
+    expect(sel.picks.some((p) => p.slotId === 'C1')).toBe(false);
+    expect(sel.notes.join(' ')).toMatch(/Squat.*lutut kiri/i);
+  });
+
+  it('rotasi blok melewati gerakan yang tidak boleh untuk cedera', () => {
     const block: BlockInfo = { index: 1, start: '2026-02-15', assignments: { C1: 'goblet-squat', C2: 'single-leg-rdl', C3: 'hip-thrust' } };
-    const sel = selectExercises(input({ dayType: 'C', block, knee: { ...open, reduce: true } }));
-    for (const p of sel.picks) expect(p.def.kneeTier ?? 'low').toBe('low');
+    const sel = selectExercises(input({ dayType: 'C', block }));
     expect(sel.picks.find((p) => p.slotId === 'C1')!.def.id).not.toBe('goblet-squat');
   });
 
-  it('reverse lunge hanya muncul kalau tingkat high terbuka', () => {
-    const seen = new Set<string>();
-    for (let d = 1; d <= 20; d++) {
-      const today = `2026-03-${String(d).padStart(2, '0')}`;
-      seen.add(selectExercises(input({ dayType: 'C', today, knee: { ...open, highOpen: false } })).picks.find((p) => p.slotId === 'C4')!.def.id);
-    }
-    expect(seen.has('reverse-lunge')).toBe(false);
-    const sel = selectExercises(input({ dayType: 'C', knee: open, favorites: ['reverse-lunge'] }));
-    expect(ids(sel)).toContain('reverse-lunge');
+  it('alasan kunci menyebut cedera dan syarat membukanya', () => {
+    expect(lockReason(EXERCISE_BY_ID['split-squat'], closed)).toMatch(/lutut kiri.*2 sesi/i);
+    expect(lockReason(EXERCISE_BY_ID['reverse-lunge'], closed)).toMatch(/lutut kiri.*Pulih/i);
+    expect(lockReason(EXERCISE_BY_ID['goblet-box-squat'], [cedera('lutut', 'akut')])).toMatch(/lutut kiri.*Akut/i);
+    expect(lockReason(EXERCISE_BY_ID['goblet-box-squat'], closed)).toBeUndefined();
   });
 });
 
@@ -273,7 +307,6 @@ describe('beban awal dari gerakan saudara', () => {
       today: '2026-03-01',
       programStart: '2026-02-01',
       deload: false,
-      kneeReduce: false,
       overrides: { A3: 'arnold-press' },
     });
     expect(plan.exercises.find((e) => e.def.id === 'arnold-press')!.sets[0].kind).toBe('calibration');
@@ -287,7 +320,6 @@ describe('beban awal dari gerakan saudara', () => {
       today: '2026-03-01',
       programStart: '2026-02-01',
       deload: false,
-      kneeReduce: false,
       overrides: { A3: 'arnold-press' },
     });
     const arnold = plan.exercises.find((e) => e.def.id === 'arnold-press')!;
@@ -301,20 +333,22 @@ describe('planAlternatives', () => {
   it('hanya kandidat slot yang sama, boleh untuk lutut, dan bukan 🚫', () => {
     const ctx = {
       dayType: 'C' as const,
+      injuries: closed,
       states: {},
       eq,
       today: '2026-03-01',
       programStart: '2026-02-01',
       deload: false,
-      kneeReduce: false,
       banned: ['db-rdl'],
     };
     const plan = planSession(ctx);
     const squat = plan.exercises.find((e) => e.slotId === 'C1')!;
     const alts = planAlternatives(ctx, 'C1', squat.def.id, plan.exercises.map((e) => e.def)).map((a) => a.def.id);
-    expect(alts).toEqual(['suitcase-box-squat']);
+    // lutut Pemulihan belum stabil: hanya squat yang ringan untuk lutut
+    expect(alts.sort()).toEqual(['suitcase-box-squat', 'sumo-goblet-squat', 'tempo-goblet-box-squat'].filter((id) => id !== squat.def.id).sort());
     const hinge = planAlternatives(ctx, 'C2', 'rdl', plan.exercises.map((e) => e.def)).map((a) => a.def.id);
-    expect(hinge).toEqual([]);
+    // db-rdl 🚫, single-leg-rdl (lutut sedang) terkunci
+    expect(hinge.sort()).toEqual(['b-stance-db-rdl', 'db-good-morning', 'sumo-db-deadlift']);
   });
 });
 

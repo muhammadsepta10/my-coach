@@ -32,12 +32,13 @@ export function phase2Eligible(p: {
   phase: Phase;
   programStart: string;
   today: string;
-  /** skor nyeri lutut terbaru (sebelum & sesudah sesi C) */
-  recentKneeScores: number[];
+  /** skor cek nyeri terbaru semua cedera aktif (sebelum & sesudah sesi); null = tidak ada cedera aktif */
+  recentPainScores: number[] | null;
 }): boolean {
   if (p.phase !== 1) return false;
   if (daysBetween(p.programStart, p.today) < PHASE1_DAYS) return false;
-  if (p.recentKneeScores.length < 4) return false;
-  const avg = p.recentKneeScores.reduce((a, b) => a + b, 0) / p.recentKneeScores.length;
+  if (p.recentPainScores === null) return true;
+  if (p.recentPainScores.length < 4) return false;
+  const avg = p.recentPainScores.reduce((a, b) => a + b, 0) / p.recentPainScores.length;
   return avg <= 2;
 }

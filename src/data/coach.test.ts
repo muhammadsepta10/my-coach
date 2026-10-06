@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { CoachDB } from './db';
 import { createCoach, type Coach } from './coach';
 import { DEFAULT_EQUIPMENT } from '../coach/plates';
+import { EXERCISE_BY_ID } from '../coach/program';
 
 let coach: Coach;
 let clock = '2026-01-05';
@@ -17,8 +18,13 @@ beforeEach(async () => {
   await coach.completeOnboarding(profile, DEFAULT_EQUIPMENT);
 });
 
-async function doSession(feel: 'pas' | 'berat' | 'ringan' = 'pas', reps?: number) {
-  const s = (await coach.startSession({ kneePre: 1 }))!;
+/** skor nyeri yang sama untuk semua cedera aktif */
+async function painAll(score: number): Promise<Record<string, number>> {
+  return Object.fromEntries((await coach.activeInjuries()).map((i) => [i.id, score]));
+}
+
+async function doSession(feel: 'pas' | 'berat' | 'ringan' = 'pas', reps?: number, pain = 1) {
+  const s = (await coach.startSession({ pain: await painAll(pain) }))!;
   for (let i = 0; i < s.exercises.length; i++) {
     let cur = (await coach.getSession(s.id!))!;
     const ex = cur.exercises[i];
@@ -29,7 +35,7 @@ async function doSession(feel: 'pas' | 'berat' | 'ringan' = 'pas', reps?: number
     }
     await coach.setFeel(s.id!, i, feel);
   }
-  return coach.finishSession(s.id!, { kneePost: 1 });
+  return coach.finishSession(s.id!, { pain: await painAll(pain) });
 }
 
 describe('coach service', () => {
@@ -101,21 +107,6 @@ describe('coach service', () => {
     await coach2.importData(json);
     expect((await coach2.history()).length).toBe(1);
     expect((await coach2.getSettings())?.onboarded).toBe(true);
-  });
-
-  it('pertanyaan lutut keesokan hari setelah latihan kaki', async () => {
-    await doSession();
-    await doSession();
-    await doSession(); // C
-    expect(await coach.pendingKneeCheck()).toBeUndefined();
-    clock = '2026-01-06';
-    const pending = await coach.pendingKneeCheck();
-    expect(pending?.dayType).toBe('C');
-    await coach.recordKneeNextDay(pending!.id!, 5);
-    expect(await coach.pendingKneeCheck()).toBeUndefined();
-    // sesi C berikutnya dikurangi bebannya
-    const ctx = await coach.kneeStatus();
-    expect(ctx.reduce).toBe(true);
   });
 
   it('mencatat set pada gerakan yang dilewati membatalkan status lewati', async () => {
@@ -358,5 +349,154 @@ describe('riwayat slot', () => {
     await coach.toggleFavorite(skipped);
     const plan = await coach.previewPlan();
     expect(plan.exercises.find((e) => e.slotId === 'A6')!.def.id).toBe(skipped);
+  });
+});
+
+function lututLoad(id: string) {
+  return EXERCISE_BY_ID[id]?.load?.lutut;
+}
+
+describe('cedera', () => {
+  /** jalankan A dan B supaya sesi berikutnya hari C */
+  async function toC() {
+    await doSession();
+    await doSession();
+  }
+  const lututPicks = (plan: { exercises: { def: { load?: Record<string, string> } }[] }) =>
+    plan.exercises.filter((e) => e.def.load?.lutut !== undefined);
+
+  it('tambah, ubah status, dan tandai sembuh', async () => {
+    const i = await coach.addInjury({ area: 'engkel', side: 'kanan', status: 'akut' });
+    expect((await coach.activeInjuries()).map((x) => x.id)).toEqual([i.id]);
+    await coach.setInjuryStatus(i.id, 'pemulihan');
+    expect((await coach.activeInjuries())[0].status).toBe('pemulihan');
+    await coach.healInjury(i.id);
+    expect(await coach.activeInjuries()).toEqual([]);
+  });
+
+  it('cedera Akut: gerakan yang membebani areanya tidak dipilih', async () => {
+    await toC();
+    expect(lututPicks(await coach.previewPlan()).length).toBeGreaterThan(0);
+    await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'akut' });
+    const plan = await coach.previewPlan();
+    expect(lututPicks(plan)).toEqual([]);
+    expect(plan.notes.join(' ')).toMatch(/lutut kiri/);
+  });
+
+  it('cek nyeri sesudah sesi & keesokan hari hanya untuk cedera yang areanya dibebani', async () => {
+    const knee = await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pemulihan' });
+    const a = (await coach.startSession({ pain: { [knee.id]: 1 } }))!;
+    expect(await coach.loadedInjuries(a.id!)).toEqual([]);
+    await coach.discardSession(a.id!);
+    await toC();
+    const c = (await coach.startSession({ pain: { [knee.id]: 1 } }))!;
+    for (let i = 0; i < c.exercises.length; i++) {
+      const p = c.exercises[i].planned[0];
+      await coach.logSet(c.id!, i, 0, { reps: p.repMax, load: p.load ?? 10 });
+    }
+    expect((await coach.loadedInjuries(c.id!)).map((x) => x.id)).toEqual([knee.id]);
+    await coach.finishSession(c.id!, { pain: { [knee.id]: 2 } });
+    expect(await coach.pendingPainChecks()).toEqual([]);
+    clock = '2026-01-06';
+    const pending = await coach.pendingPainChecks();
+    expect(pending.map((p) => [p.session.dayType, p.injury.id])).toEqual([['C', knee.id]]);
+    await coach.recordNextDayPain(pending[0].session.id!, knee.id, 1);
+    expect(await coach.pendingPainChecks()).toEqual([]);
+  });
+
+  it('nyeri ≥4 sebelum sesi: Akut sesi + tawaran ubah status, status tersimpan tidak berubah', async () => {
+    const knee = await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pulih' });
+    await toC();
+    const c = (await coach.startSession({ pain: { [knee.id]: 5 } }))!;
+    expect(c.exercises.filter((e) => e.exerciseId && lututLoad(e.exerciseId))).toEqual([]);
+    expect(c.akutOffers).toEqual([knee.id]);
+    expect((await coach.activeInjuries())[0].status).toBe('pulih');
+  });
+
+  it('nyeri keesokan hari ≥4: sesi berikutnya yang membebani area itu jadi Akut sesi', async () => {
+    const knee = await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pulih' });
+    await toC();
+    await doSession();
+    clock = '2026-01-06';
+    const pending = await coach.pendingPainChecks();
+    await coach.recordNextDayPain(pending[0].session.id!, knee.id, 6);
+    const a = (await coach.startSession({}))!;
+    await coach.finishActiveDay(a.id!, { minutes: 20, mobility: false });
+    await doSession();
+    await doSession();
+    expect(lututPicks(await coach.previewPlan())).toEqual([]);
+  });
+
+  it('Pemulihan: gerakan sedang terbuka setelah 2 sesi stabil', async () => {
+    await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pemulihan' });
+    const c4Options = async () => {
+      const plan = await coach.previewPlan();
+      const i = plan.exercises.findIndex((e) => e.slotId === 'C4');
+      return i === -1 ? [] : [plan.exercises[i].def.id, ...(await coach.previewSwapOptions(i)).map((o) => o.def.id)];
+    };
+    await toC();
+    expect(await c4Options()).toEqual([]);
+    await doSession();
+    const a = (await coach.startSession({}))!;
+    await coach.finishActiveDay(a.id!, { minutes: 20, mobility: false });
+    await toC();
+    await doSession();
+    const a2 = (await coach.startSession({}))!;
+    await coach.finishActiveDay(a2.id!, { minutes: 20, mobility: false });
+    await toC();
+    expect(await c4Options()).toContain('split-squat');
+    expect(await c4Options()).not.toContain('reverse-lunge');
+  });
+
+  it('saran naik ke Pulih setelah 4 sesi stabil, bisa ditunda 7 hari', async () => {
+    const knee = await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pemulihan' });
+    for (let k = 0; k < 4; k++) {
+      await toC();
+      await doSession();
+      const a = (await coach.startSession({}))!;
+      await coach.finishActiveDay(a.id!, { minutes: 20, mobility: false });
+    }
+    expect((await coach.pulihSuggestions()).map((i) => i.id)).toEqual([knee.id]);
+    await coach.snoozePulih(knee.id);
+    expect(await coach.pulihSuggestions()).toEqual([]);
+    clock = '2026-01-13';
+    expect((await coach.pulihSuggestions()).map((i) => i.id)).toEqual([knee.id]);
+  });
+
+  it('ekspor/impor membawa cedera & riwayat nyeri', async () => {
+    const knee = await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pemulihan' });
+    await doSession();
+    const coach2 = createCoach(new CoachDB(`test-${Math.random()}`), () => clock);
+    await coach2.importData(await coach.exportData());
+    expect((await coach2.activeInjuries()).map((i) => i.id)).toEqual([knee.id]);
+    expect((await coach2.history())[0].pain?.[knee.id]?.pre).toBe(1);
+  });
+
+  it('impor backup lama: nyeri lutut lama jadi cedera lutut kiri Pemulihan', async () => {
+    const json = JSON.parse(await coach.exportData());
+    for (const st of json.settings) delete st.injuries;
+    json.sessions = [{ date: '2026-01-04', dayType: 'C', seqIndex: 2, phase: 1, status: 'done', deload: false, inCalibrationPhase: true, notes: [], exercises: [], cursor: 0, startedAt: 1, finishedAt: 2, kneePre: 1, kneePost: 2, kneeNextDay: 3 }];
+    const coach2 = createCoach(new CoachDB(`test-${Math.random()}`), () => clock);
+    await coach2.importData(JSON.stringify(json));
+    const [knee] = await coach2.activeInjuries();
+    expect(knee).toMatchObject({ area: 'lutut', side: 'kiri', status: 'pemulihan' });
+    expect((await coach2.history())[0].pain?.[knee.id]).toEqual({ pre: 1, post: 2, nextDay: 3 });
+  });
+});
+
+describe('migrasi database v2 → v3', () => {
+  it('lutut kiri jadi cedera Pemulihan, riwayat nyeri dipindahkan', async () => {
+    const name = `test-mig3-${Math.random()}`;
+    const v2 = new Dexie(name);
+    v2.version(2).stores({ settings: 'id', sessions: '++id, date, dayType, status', states: 'exerciseId', bodyweights: '++id, date' });
+    await v2.open();
+    await v2.table('settings').put({ id: 'settings', onboarded: true, profile, equipment: DEFAULT_EQUIPMENT, programStart: '2026-01-05', phase: 1, sound: true, favorites: [], banned: [] });
+    await v2.table('sessions').add({ date: '2026-01-07', dayType: 'C', seqIndex: 2, phase: 1, status: 'done', deload: false, inCalibrationPhase: true, notes: [], exercises: [], cursor: 0, startedAt: 1, finishedAt: 2, kneePre: 2, kneePost: 1 });
+    v2.close();
+
+    const c = createCoach(new CoachDB(name), () => '2026-01-08');
+    const [knee] = await c.activeInjuries();
+    expect(knee).toMatchObject({ area: 'lutut', side: 'kiri', status: 'pemulihan', since: '2026-01-05' });
+    expect((await c.history())[0].pain?.[knee.id]).toEqual({ pre: 2, post: 1 });
   });
 });

@@ -10,7 +10,7 @@
  */
 import { addDays, daysBetween } from './dates';
 import { CALIBRATION_DAYS } from './deload';
-import { type KneeAccess, kneeTierAllowed } from './knee';
+import { type InjuryState, exerciseAllowed, lockReason } from './injury';
 import { family, orderExercises } from './ordering';
 import { CORE_POOL, EXERCISE_BY_ID, SLOTS, SLOT_BY_ID, slotsForDay } from './program';
 import type { ExerciseDef, ExerciseState, SlotDef, TrainingDay } from './types';
@@ -45,7 +45,8 @@ export interface SelectionInput {
   favorites: string[];
   banned: string[];
   block?: BlockInfo;
-  knee: KneeAccess;
+  /** cedera aktif + konteks hari ini */
+  injuries: InjuryState[];
   /** pilihan manual untuk sesi ini: slot → gerakan */
   overrides?: Record<string, string>;
 }
@@ -76,8 +77,8 @@ export function blockStartFor(programStart: string, index: number): string {
   return index === 0 ? programStart : addDays(programStart, CALIBRATION_DAYS + (index - 1) * BLOCK_DAYS);
 }
 
-export function isEligible(def: ExerciseDef, banned: string[], knee: KneeAccess): boolean {
-  return !banned.includes(def.id) && kneeTierAllowed(def.kneeTier, knee);
+export function isEligible(def: ExerciseDef, banned: string[], injuries: InjuryState[]): boolean {
+  return !banned.includes(def.id) && exerciseAllowed(def, injuries);
 }
 
 /** hash string sederhana (FNV-1a) untuk memecah seri secara deterministik */
@@ -90,15 +91,15 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-function eligibleCandidates(slot: SlotDef, input: Pick<SelectionInput, 'banned' | 'knee'>): string[] {
-  return slot.candidates.filter((id) => isEligible(EXERCISE_BY_ID[id], input.banned, input.knee));
+function eligibleCandidates(slot: SlotDef, input: Pick<SelectionInput, 'banned' | 'injuries'>): string[] {
+  return slot.candidates.filter((id) => isEligible(EXERCISE_BY_ID[id], input.banned, input.injuries));
 }
 
 /**
  * Kandidat primer berikutnya setelah `after` (berputar sesuai urutan slot),
  * mengutamakan favorit. `after` sendiri hanya dipilih kalau tidak ada pilihan lain.
  */
-function nextPrimary(slot: SlotDef, after: string | undefined, input: Pick<SelectionInput, 'banned' | 'knee' | 'favorites'>): string | undefined {
+function nextPrimary(slot: SlotDef, after: string | undefined, input: Pick<SelectionInput, 'banned' | 'injuries' | 'favorites'>): string | undefined {
   const pool = eligibleCandidates(slot, input);
   if (pool.length === 0) return undefined;
   const others = pool.filter((id) => id !== after);
@@ -132,12 +133,11 @@ function newBlock(input: SelectionInput, index: number): BlockInfo {
 }
 
 function lockedNote(slot: SlotDef, input: SelectionInput): string {
-  const kneeLocked = slot.candidates.some((id) => !kneeTierAllowed(EXERCISE_BY_ID[id].kneeTier, input.knee));
-  if (kneeLocked) {
-    return input.knee.reduce
-      ? `${slot.label}: dilewati hari ini — lutut sedang sensitif, hanya gerakan ramah lutut.`
-      : `${slot.label} (step-up dkk.) masih terkunci sampai lutut stabil (nyeri ≤2 di 2 sesi kaki berturut-turut).`;
-  }
+  const reason = slot.candidates
+    .filter((id) => !input.banned.includes(id))
+    .map((id) => lockReason(EXERCISE_BY_ID[id], input.injuries))
+    .find((r) => r !== undefined);
+  if (reason) return `${slot.label} terkunci hari ini — ${reason}.`;
   return `${slot.label}: dilewati — semua gerakannya ditandai 🚫.`;
 }
 
@@ -154,8 +154,8 @@ function rankAccessory(pool: string[], slotId: string, current: Family, input: S
 }
 
 /** core yang boleh untuk sub-tipe tertentu, dengan aturan carry */
-export function corePool(type: 'anti' | 'other', assembled: Family, input: Pick<SelectionInput, 'banned' | 'knee'>): ExerciseDef[] {
-  return CORE_POOL.filter((d) => d.coreType === type && isEligible(d, input.banned, input.knee) && (!d.carry || assembled === 'dumbbell'));
+export function corePool(type: 'anti' | 'other', assembled: Family, input: Pick<SelectionInput, 'banned' | 'injuries'>): ExerciseDef[] {
+  return CORE_POOL.filter((d) => d.coreType === type && isEligible(d, input.banned, input.injuries) && (!d.carry || assembled === 'dumbbell'));
 }
 
 /** alat yang terpasang setelah gerakan utama selesai */
@@ -250,7 +250,7 @@ export function slotAlternatives(
   slotId: string,
   currentId: string,
   assembled: Family,
-  input: Pick<SelectionInput, 'banned' | 'knee'>,
+  input: Pick<SelectionInput, 'banned' | 'injuries'>,
 ): ExerciseDef[] {
   if (slotId === CORE_SLOTS.anti || slotId === CORE_SLOTS.other) {
     const type = slotId === CORE_SLOTS.anti ? 'anti' : 'other';

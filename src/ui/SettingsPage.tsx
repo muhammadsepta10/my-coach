@@ -2,19 +2,65 @@ import { useRef, useState } from 'react';
 import { type EquipmentConfig, type LoadMode, achievableLoads, barWeight, formatKg } from '../coach/plates';
 import type { Profile, Settings } from '../data/db';
 import { coach } from '../data/instance';
+import { injuryName } from '../coach/injury';
+import { InjuryForm, InjuryList, StatusPill, capitalize } from './Injuries';
 import { Field } from './Onboarding';
-import { Button, Card } from './common';
+import { Button, Card, formatDate } from './common';
 
 export function SettingsPage({ settings }: { settings: Settings }) {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Pengaturan</h1>
+      <InjuryCard settings={settings} />
       <ProfileForm initial={settings.profile} />
       <EquipmentForm initial={settings.equipment} />
       <ProgramCard settings={settings} />
       <BackupCard />
       <p className="text-xs text-slate-600 text-center pb-4">My Coach · data tersimpan hanya di perangkat ini</p>
     </div>
+  );
+}
+
+function InjuryCard({ settings }: { settings: Settings }) {
+  const [adding, setAdding] = useState(false);
+  const [showHealed, setShowHealed] = useState(false);
+  const active = settings.injuries.filter((i) => !i.healedOn);
+  const healed = settings.injuries.filter((i) => i.healedOn);
+  return (
+    <Card className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">Cedera</h2>
+        {!adding && (
+          <button className="text-sm text-sky-400" onClick={() => setAdding(true)}>
+            + Tambah cedera
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-slate-400">
+        Akut: gerakan yang membebani area itu tidak dipilih. Pemulihan: hanya gerakan ringan, dibuka bertahap saat nyeri ≤2. Pulih: semua boleh.
+      </p>
+      {adding && <InjuryForm onDone={() => setAdding(false)} onCancel={() => setAdding(false)} />}
+      <InjuryList injuries={active} full />
+      {healed.length > 0 && (
+        <div>
+          <button className="text-sm text-slate-400" onClick={() => setShowHealed(!showHealed)}>
+            {showHealed ? '▾' : '▸'} Riwayat sembuh ({healed.length})
+          </button>
+          {showHealed && (
+            <ul className="mt-2 space-y-1 text-sm text-slate-400">
+              {healed.map((i) => (
+                <li key={i.id} className="flex items-center justify-between">
+                  <span>
+                    {capitalize(injuryName(i))} · sembuh {formatDate(i.healedOn!)}
+                  </span>
+                  <StatusPill status={i.status} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 

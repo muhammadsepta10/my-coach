@@ -1,13 +1,13 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useState } from 'react';
-import { type KneeAccess, kneeLockReason } from '../coach/knee';
+import { type InjuryState, lockReason } from '../coach/injury';
 import { formatKg } from '../coach/plates';
 import { CORE_POOL, DAY_LABEL, DEFAULT_IDS, EXERCISE_BY_ID, SLOTS } from '../coach/program';
 import type { ExerciseDef, ExerciseState } from '../coach/types';
 import type { Settings } from '../data/db';
 import { coach } from '../data/instance';
 import { ExerciseAnimation } from './ExerciseAnimation';
-import { KneeTierPill } from './SwapSheet';
+import { AreaLoadText } from './Injuries';
 import { HowTo } from './Workout';
 import { Card, Pill, loadText } from './common';
 
@@ -15,7 +15,7 @@ const ROLE_LABEL = { primary: 'utama · tetap 4 minggu', accessory: 'berganti ti
 
 export function Library({ settings }: { settings: Settings }) {
   const states = useLiveQuery(() => coach.getStates(), []);
-  const knee = useLiveQuery(() => coach.kneeAccessNow(), []);
+  const injuries = useLiveQuery(() => coach.injuryStatesNow(), []);
   const [open, setOpen] = useState<string | null>(null);
   const days = ['A', 'B', 'C'] as const;
   const row = (e: ExerciseDef) => (
@@ -24,7 +24,7 @@ export function Library({ settings }: { settings: Settings }) {
       def={e}
       state={states?.[e.id]}
       settings={settings}
-      knee={knee}
+      injuries={injuries}
       open={open === e.id}
       onToggle={() => setOpen(open === e.id ? null : e.id)}
     />
@@ -62,20 +62,20 @@ function ExerciseRow({
   def: e,
   state,
   settings,
-  knee,
+  injuries,
   open,
   onToggle,
 }: {
   def: ExerciseDef;
   state?: ExerciseState;
   settings: Settings;
-  knee?: KneeAccess;
+  injuries?: InjuryState[];
   open: boolean;
   onToggle: () => void;
 }) {
   const fav = settings.favorites.includes(e.id);
   const banned = settings.banned.includes(e.id);
-  const lock = knee ? kneeLockReason(e.kneeTier, knee) : undefined;
+  const lock = injuries ? lockReason(e, injuries) : undefined;
   return (
     <Card className={`p-3 ${banned ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-3">
@@ -89,10 +89,10 @@ function ExerciseRow({
               {e.name}
             </p>
             <p className="text-xs text-slate-400">{e.muscles}</p>
+            <AreaLoadText load={e.load} />
             <div className="flex gap-1 mt-1 flex-wrap">
               {e.block === 'core' && <Pill>{e.coreType === 'anti' ? 'core · anti-gerakan' : 'core'}</Pill>}
               {e.carry && <Pill>butuh dumbel</Pill>}
-              <KneeTierPill tier={e.kneeTier !== 'low' ? e.kneeTier : undefined} />
               {lock && <Pill tone="rose">🔒 terkunci</Pill>}
               {banned && <Pill tone="rose">tidak dipilih</Pill>}
             </div>

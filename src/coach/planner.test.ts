@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { InjuryState } from './injury';
 import { DEFAULT_EQUIPMENT } from './plates';
 import { planSession, finalizeExercise, setupInstruction } from './planner';
 import { EXERCISE_BY_ID } from './program';
@@ -11,8 +12,14 @@ function calibrated(id: string, load: number, over: Partial<ExerciseState> = {})
   return { ...initialState(EXERCISE_BY_ID[id]), calibrated: true, load, ...over };
 }
 
+/** lutut kiri dalam Pemulihan, belum stabil: hanya gerakan ringan untuk lutut */
+const lututPemulihan = (stableSessions = 0): InjuryState[] => [
+  { injury: { id: 'lutut-kiri', area: 'lutut', side: 'kiri', status: 'pemulihan', since: '2026-01-01' }, stableSessions, acuteToday: false },
+];
+
 const baseCtx = {
   eq,
+  injuries: lututPemulihan(),
   today: '2026-03-01',
   // blok 1 (setelah 2 minggu kalibrasi): gerakan utama masih gerakan asli
   programStart: '2026-02-01',
@@ -52,18 +59,10 @@ describe('planSession', () => {
     const plan = planSession({ ...baseCtx, dayType: 'C', states: {} });
     expect(plan.exercises.some((e) => e.slotId === 'C4')).toBe(false);
     expect(plan.notes.join(' ')).toMatch(/terkunci/);
-    const open = planSession({ ...baseCtx, dayType: 'C', states: {}, kneeMediumOpen: true });
+    const open = planSession({ ...baseCtx, dayType: 'C', states: {}, injuries: lututPemulihan(2) });
     const c4 = open.exercises.find((e) => e.slotId === 'C4')!;
-    expect(['step-up', 'split-squat']).toContain(c4.def.id);
-  });
-
-  it('lutut nyeri: beban gerakan kaki dikurangi 20%', () => {
-    const states = { rdl: calibrated('rdl', 24.85) };
-    const plan = planSession({ ...baseCtx, dayType: 'C', states, kneeReduce: true });
-    const rdl = plan.exercises.find((e) => e.def.id === 'rdl')!;
-    const work = rdl.sets.filter((s) => s.kind === 'work');
-    expect(work[0].load).toBeLessThanOrEqual(24.85 * 0.8);
-    expect(rdl.kneeReduced).toBe(true);
+    // stabil 2 sesi: gerakan lutut sedang terbuka, yang berat belum
+    expect(c4.def.load?.lutut).toBe('sedang');
   });
 
   it('deload: set dikurangi dan beban 90%', () => {

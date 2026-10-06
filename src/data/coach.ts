@@ -3,7 +3,17 @@
  */
 import { addDays, daysBetween } from '../coach/dates';
 import { DELOAD_LOAD_FACTOR, isDeloadActive, shouldDeload } from '../coach/deload';
-import { KNEE_LOAD_FACTOR, kneeAccess, kneeModifier } from '../coach/knee';
+import {
+  type BodyArea,
+  type Injury,
+  type InjuryState,
+  type InjuryStatus,
+  type Side,
+  PAIN_THRESHOLD,
+  PULIH_STABLE_SESSIONS,
+  injuryState,
+  painRising,
+} from '../coach/injury';
 import { type EquipmentConfig, roundDownToAchievable } from '../coach/plates';
 import { type PlanContext, type PlannedExercise, finalizeExercise, planAlternatives, planSession, planSlotExercise, targetRir } from '../coach/planner';
 import { EXERCISE_BY_ID, SLOT_BY_ID } from '../coach/program';
@@ -11,7 +21,7 @@ import { type SelectionHistory, blockIndexFor, blockStartFor, selectExercises, s
 import { applyCalibration, initialState } from '../coach/progression';
 import { nextDay as rotationNext, phase2Eligible } from '../coach/rotation';
 import type { DayType, ExerciseState, Feel, TrainingDay } from '../coach/types';
-import type { BodyWeight, CoachDB, Profile, SessionExercise, SessionRecord, Settings } from './db';
+import { type BodyWeight, type CoachDB, type Profile, type SessionExercise, type SessionRecord, type Settings, migrateLegacyKnee } from './db';
 
 export type Coach = ReturnType<typeof createCoach>;
 
@@ -44,6 +54,7 @@ export function createCoach(db: CoachDB, now: () => string) {
       sound: true,
       favorites: [],
       banned: [],
+      injuries: [],
     });
     await db.bodyweights.add({ date: today, kg: profile.weightKg });
   }
@@ -77,14 +88,25 @@ export function createCoach(db: CoachDB, now: () => string) {
     return db.states.get(id);
   }
 
-  async function lastCSessions(): Promise<SessionRecord[]> {
-    return (await doneSessions()).filter((s) => s.dayType === 'C');
+  async function activeInjuries(): Promise<Injury[]> {
+    return (await requireSettings()).injuries.filter((i) => !i.healedOn);
   }
 
-  async function kneeStatus(kneePre?: number) {
-    const cs = await lastCSessions();
-    const lastC = cs[cs.length - 1];
-    return kneeModifier(kneePre, lastC ? { kneePost: lastC.kneePost, kneeNextDay: lastC.kneeNextDay } : undefined);
+  /** sesi selesai (urut kronologis) yang membebani area cedera ini */
+  function loadedSessions(injury: Injury, done: SessionRecord[]): SessionRecord[] {
+    return done.filter((d) => loadedAreas(d).has(injury.area) || d.pain?.[injury.id]?.post !== undefined);
+  }
+
+  /** cedera aktif + konteks hari ini (nyeri stabil, Akut sesi dari nyeri sebelum sesi) */
+  async function injuryStates(prePain: Record<string, number> = {}): Promise<InjuryState[]> {
+    const done = await doneSessions();
+    return (await activeInjuries()).map((i) =>
+      injuryState(
+        i,
+        loadedSessions(i, done).map((d) => d.pain?.[i.id]),
+        prePain[i.id],
+      ),
+    );
   }
 
   async function deloadStatus(): Promise<{ active: boolean; reason?: string; start?: string }> {
@@ -96,17 +118,14 @@ export function createCoach(db: CoachDB, now: () => string) {
     const feels = done
       .flatMap((d) => d.exercises.filter((e) => !e.skipped && e.feel).map((e) => e.feel as Feel))
       .slice(-12);
-    const cs = done.filter((d) => d.dayType === 'C' && d.kneePost !== undefined);
-    const lastPost = cs[cs.length - 1]?.kneePost;
-    const prevPost = cs[cs.length - 2]?.kneePost;
-    const kneeRising = lastPost !== undefined && (lastPost >= 4 || (prevPost !== undefined && lastPost - prevPost >= 2));
+    const rising = (await activeInjuries()).some((i) => painRising(loadedSessions(i, done).map((d) => d.pain?.[i.id])));
     const r = shouldDeload({
       today,
       programStart: s.programStart,
       lastDeloadStart: s.deloadStart,
       stallStreaks: states.map((st) => st.stallStreak),
       recentFeels: feels,
-      kneeRising,
+      painRising: rising,
     });
     return { active: false, reason: r.deload ? r.reason : undefined };
   }
@@ -129,17 +148,16 @@ export function createCoach(db: CoachDB, now: () => string) {
     return { lastBySlot, lastCore };
   }
 
-  async function planContext(p: { dayType: DayType; today: string; deload: boolean; kneeReduce: boolean }): Promise<PlanContext> {
+  async function planContext(p: { dayType: DayType; today: string; deload: boolean; prePain?: Record<string, number> }): Promise<PlanContext> {
     const settings = await requireSettings();
-    const knee = kneeAccess(await lastCSessions(), settings.phase, p.kneeReduce);
+    const { prePain, ...rest } = p;
     const swaps = settings.pendingSwaps?.dayType === p.dayType ? settings.pendingSwaps.picks : undefined;
     return {
-      ...p,
+      ...rest,
       states: await getStates(),
       eq: settings.equipment,
       programStart: settings.programStart,
-      kneeMediumOpen: knee.mediumOpen,
-      kneeHighOpen: knee.highOpen,
+      injuries: await injuryStates(prePain),
       history: await selectionHistory(),
       favorites: settings.favorites,
       banned: settings.banned,
@@ -155,9 +173,8 @@ export function createCoach(db: CoachDB, now: () => string) {
     const { dayType } = await nextDay();
     const d = dayType === 'AKTIF' ? { active: false } : await deloadStatus();
     const deload = d.active || ('reason' in d && !!d.reason);
-    const knee = await kneeStatus(undefined);
     const deloadReason = d.active ? settings.deloadReason : 'reason' in d ? d.reason : undefined;
-    const plan = planSession(await planContext({ dayType, today, deload, kneeReduce: knee.reduce }));
+    const plan = planSession(await planContext({ dayType, today, deload }));
     return { ...plan, deloadReason };
   }
 
@@ -166,8 +183,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     const plan = await previewPlan();
     const cur = plan.exercises[index];
     if (!cur) return [];
-    const knee = await kneeStatus(undefined);
-    const ctx = await planContext({ dayType: plan.dayType, today: now(), deload: plan.deload, kneeReduce: knee.reduce });
+    const ctx = await planContext({ dayType: plan.dayType, today: now(), deload: plan.deload });
     return planAlternatives(ctx, cur.slotId, cur.def.id, plan.exercises.map((e) => e.def));
   }
 
@@ -179,7 +195,8 @@ export function createCoach(db: CoachDB, now: () => string) {
     await saveSettings({ pendingSwaps: { dayType, picks: { ...prev, [slotId]: exerciseId } } });
   }
 
-  async function startSession(opts: { kneePre?: number }): Promise<SessionRecord | undefined> {
+  /** `pain`: cek nyeri sebelum sesi per cedera aktif (id → 0–10) */
+  async function startSession(opts: { pain?: Record<string, number> }): Promise<SessionRecord | undefined> {
     const existing = await currentSession();
     if (existing) return existing;
     const settings = await requireSettings();
@@ -195,10 +212,11 @@ export function createCoach(db: CoachDB, now: () => string) {
         await saveSettings({ deloadStart: today, deloadReason: d.reason });
       }
     }
-    const knee = dayType === 'C' ? await kneeStatus(opts.kneePre) : await kneeStatus(undefined);
-    const plan = planSession(await planContext({ dayType, today, deload, kneeReduce: knee.reduce }));
+    const prePain = opts.pain ?? {};
+    const plan = planSession(await planContext({ dayType, today, deload, prePain }));
     const notes = [...plan.notes];
-    if (dayType === 'C' && knee.reduce && 'reason' in knee && knee.reason) notes.unshift(knee.reason);
+    const active = await activeInjuries();
+    const akutOffers = active.filter((i) => i.status !== 'akut' && (prePain[i.id] ?? 0) >= PAIN_THRESHOLD).map((i) => i.id);
     if (deload) {
       const s = await requireSettings();
       if (s.deloadReason) notes.unshift(`Minggu ringan: ${s.deloadReason}.`);
@@ -214,9 +232,9 @@ export function createCoach(db: CoachDB, now: () => string) {
       status: 'in_progress',
       deload,
       inCalibrationPhase: plan.inCalibrationPhase,
-      kneeReduce: knee.reduce,
       notes,
-      kneePre: opts.kneePre,
+      pain: Object.fromEntries(Object.entries(prePain).map(([id, pre]) => [id, { pre }])),
+      ...(akutOffers.length ? { akutOffers } : {}),
       exercises,
       cursor: 0,
       startedAt: Date.now(),
@@ -234,12 +252,10 @@ export function createCoach(db: CoachDB, now: () => string) {
   }
 
   async function sessionContext(session: SessionRecord): Promise<PlanContext> {
-    const ctx = await planContext({
-      dayType: session.dayType,
-      today: session.date,
-      deload: session.deload,
-      kneeReduce: session.kneeReduce ?? session.exercises.some((e) => e.kneeReduced),
-    });
+    const prePain = Object.fromEntries(
+      Object.entries(session.pain ?? {}).flatMap(([id, p]) => (p.pre !== undefined ? [[id, p.pre]] : [])),
+    );
+    const ctx = await planContext({ dayType: session.dayType, today: session.date, deload: session.deload, prePain });
     return { ...ctx, overrides: undefined };
   }
 
@@ -308,8 +324,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     const index = blockIndexFor(s.programStart, today);
     let block = s.block?.index === index ? s.block : undefined;
     if (!block) {
-      const knee = await kneeStatus(undefined);
-      const ctx = await planContext({ dayType: 'A', today, deload: false, kneeReduce: knee.reduce });
+      const ctx = await planContext({ dayType: 'A', today, deload: false });
       block = selectExercises({
         dayType: 'A',
         today,
@@ -319,7 +334,7 @@ export function createCoach(db: CoachDB, now: () => string) {
         favorites: s.favorites,
         banned: s.banned,
         block: s.block,
-        knee: kneeAccess(await lastCSessions(), s.phase, knee.reduce),
+        injuries: ctx.injuries ?? [],
       }).block;
     }
     const start = blockStartFor(s.programStart, index);
@@ -338,11 +353,53 @@ export function createCoach(db: CoachDB, now: () => string) {
     };
   }
 
-  /** tingkat lutut yang terbuka sekarang (untuk alasan kunci di Pustaka) */
-  async function kneeAccessNow() {
+  async function addInjury(p: { area: BodyArea; side?: Side; status: InjuryStatus }): Promise<Injury> {
     const s = await requireSettings();
-    const knee = await kneeStatus(undefined);
-    return kneeAccess(await lastCSessions(), s.phase, knee.reduce);
+    const base = p.side ? `${p.area}-${p.side}` : p.area;
+    let id = base;
+    for (let n = 2; s.injuries.some((i) => i.id === id); n++) id = `${base}-${n}`;
+    const injury: Injury = { id, area: p.area, ...(p.side ? { side: p.side } : {}), status: p.status, since: now() };
+    await saveSettings({ injuries: [...s.injuries, injury] });
+    return injury;
+  }
+
+  async function patchInjury(id: string, patch: Partial<Injury>) {
+    const s = await requireSettings();
+    await saveSettings({ injuries: s.injuries.map((i) => (i.id === id ? { ...i, ...patch } : i)) });
+  }
+
+  async function setInjuryStatus(id: string, status: InjuryStatus) {
+    await patchInjury(id, { status });
+  }
+
+  async function healInjury(id: string) {
+    await patchInjury(id, { healedOn: now() });
+  }
+
+  /** cedera Pemulihan yang nyerinya stabil 4 sesi: tawarkan naik ke Pulih */
+  async function pulihSuggestions(): Promise<Injury[]> {
+    const today = now();
+    return (await injuryStates())
+      .filter((st) => st.injury.status === 'pemulihan' && st.stableSessions >= PULIH_STABLE_SESSIONS)
+      .map((st) => st.injury)
+      .filter((i) => !i.pulihSnoozeUntil || daysBetween(today, i.pulihSnoozeUntil) <= 0);
+  }
+
+  async function snoozePulih(id: string) {
+    await patchInjury(id, { pulihSnoozeUntil: addDays(now(), 7) });
+  }
+
+  /** cedera aktif + konteks saat ini (untuk alasan kunci di Pustaka) */
+  async function injuryStatesNow() {
+    return injuryStates();
+  }
+
+  /** cedera aktif yang areanya dibebani sesi ini (untuk cek nyeri sesudah sesi) */
+  async function loadedInjuries(id: number): Promise<Injury[]> {
+    const session = await db.sessions.get(id);
+    if (!session) return [];
+    const areas = loadedAreas(session);
+    return (await activeInjuries()).filter((i) => areas.has(i.area));
   }
 
   async function dismissBlockCard(index: number) {
@@ -383,7 +440,6 @@ export function createCoach(db: CoachDB, now: () => string) {
     let load = calibrated.load!;
     if (def.loadMode) {
       if (session.deload) load = roundDownToAchievable(settings.equipment, def.loadMode, load * DELOAD_LOAD_FACTOR);
-      if (ex.kneeReduced) load = roundDownToAchievable(settings.equipment, def.loadMode, load * KNEE_LOAD_FACTOR);
     }
     return patchSession(id, (s) => {
       if (!snapshotted) s.stateSnapshots = { ...s.stateSnapshots, [def.id]: before ?? null };
@@ -419,7 +475,8 @@ export function createCoach(db: CoachDB, now: () => string) {
     return patchSession(id, (s) => Object.assign(s, patch));
   }
 
-  async function finishSession(id: number, opts: { kneePost?: number }) {
+  /** `pain`: cek nyeri sesudah sesi per cedera yang dibebani (id → 0–10) */
+  async function finishSession(id: number, opts: { pain?: Record<string, number> }) {
     const settings = await requireSettings();
     const session = await db.sessions.get(id);
     if (!session) throw new Error('Sesi tidak ditemukan');
@@ -442,9 +499,14 @@ export function createCoach(db: CoachDB, now: () => string) {
         }),
       );
     }
+    const pain = { ...session.pain };
+    const loaded = new Set((await loadedInjuries(id)).map((i) => i.id));
+    for (const [injuryId, post] of Object.entries(opts.pain ?? {})) {
+      if (loaded.has(injuryId)) pain[injuryId] = { ...pain[injuryId], post };
+    }
     await db.transaction('rw', db.states, db.sessions, async () => {
       await db.states.bulkPut(updated);
-      await db.sessions.update(id, { status: 'done', finishedAt: Date.now(), kneePost: opts.kneePost });
+      await db.sessions.update(id, { status: 'done', finishedAt: Date.now(), pain });
     });
   }
 
@@ -463,24 +525,39 @@ export function createCoach(db: CoachDB, now: () => string) {
     });
   }
 
-  async function pendingKneeCheck(): Promise<SessionRecord | undefined> {
-    const cs = await lastCSessions();
-    const last = cs[cs.length - 1];
-    if (!last || last.kneeNextDay !== undefined) return undefined;
-    const d = daysBetween(last.date, now());
-    return d >= 1 && d <= 2 ? last : undefined;
+  /** cek nyeri keesokan hari: sesi terakhir yang membebani tiap cedera aktif, 1–2 hari lalu */
+  async function pendingPainChecks(): Promise<{ session: SessionRecord; injury: Injury }[]> {
+    const done = await doneSessions();
+    const today = now();
+    const out: { session: SessionRecord; injury: Injury }[] = [];
+    for (const injury of await activeInjuries()) {
+      const loaded = loadedSessions(injury, done);
+      const last = loaded[loaded.length - 1];
+      if (!last || last.pain?.[injury.id]?.nextDay !== undefined) continue;
+      const d = daysBetween(last.date, today);
+      if (d >= 1 && d <= 2) out.push({ session: last, injury });
+    }
+    return out;
   }
 
-  async function recordKneeNextDay(id: number, score: number) {
-    await db.sessions.update(id, { kneeNextDay: score });
+  async function recordNextDayPain(sessionId: number, injuryId: string, score: number) {
+    await patchSession(sessionId, (s) => {
+      s.pain = { ...s.pain, [injuryId]: { ...s.pain?.[injuryId], nextDay: score } };
+    });
   }
 
   async function phase2Offer(): Promise<boolean> {
     const s = await requireSettings();
     if (s.phase2SnoozeUntil && daysBetween(now(), s.phase2SnoozeUntil) > 0) return false;
-    const cs = (await lastCSessions()).slice(-2);
-    const scores = cs.flatMap((c) => [c.kneePre, c.kneePost]).filter((x): x is number => x !== undefined);
-    return phase2Eligible({ phase: s.phase, programStart: s.programStart, today: now(), recentKneeScores: scores });
+    const active = await activeInjuries();
+    const done = await doneSessions();
+    const scores = active.flatMap((i) =>
+      loadedSessions(i, done)
+        .slice(-2)
+        .flatMap((d) => [d.pain?.[i.id]?.pre, d.pain?.[i.id]?.post])
+        .filter((x): x is number => x !== undefined),
+    );
+    return phase2Eligible({ phase: s.phase, programStart: s.programStart, today: now(), recentPainScores: active.length ? scores : null });
   }
 
   async function acceptPhase2() {
@@ -542,6 +619,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     }
     await db.transaction('rw', [db.settings, db.sessions, db.states, db.bodyweights], async () => {
       await Promise.all([db.settings.clear(), db.sessions.clear(), db.states.clear(), db.bodyweights.clear()]);
+      for (const st of data.settings as Settings[]) migrateLegacyKnee(st, data.sessions);
       await db.settings.bulkPut(data.settings.map(withDefaults));
       await db.sessions.bulkPut(data.sessions);
       await db.states.bulkPut(data.states ?? []);
@@ -568,7 +646,6 @@ export function createCoach(db: CoachDB, now: () => string) {
     getSession,
     getStates,
     getState,
-    kneeStatus,
     deloadStatus,
     previewPlan,
     previewSwapOptions,
@@ -581,7 +658,14 @@ export function createCoach(db: CoachDB, now: () => string) {
     toggleBanned,
     blockStatus,
     dismissBlockCard,
-    kneeAccessNow,
+    activeInjuries,
+    addInjury,
+    setInjuryStatus,
+    healInjury,
+    pulihSuggestions,
+    snoozePulih,
+    injuryStatesNow,
+    loadedInjuries,
     logSet,
     unlogSet,
     setFeel,
@@ -590,8 +674,8 @@ export function createCoach(db: CoachDB, now: () => string) {
     finishSession,
     finishActiveDay,
     discardSession,
-    pendingKneeCheck,
-    recordKneeNextDay,
+    pendingPainChecks,
+    recordNextDayPain,
     phase2Offer,
     acceptPhase2,
     snoozePhase2,
@@ -614,7 +698,6 @@ function toSessionExercise(p: PlannedExercise): SessionExercise {
     displayName: p.displayName,
     restSec: p.restSec,
     tempo: p.tempo,
-    kneeReduced: p.kneeReduced,
     notes: p.notes,
     planned: p.sets,
     logged: p.sets.map((ps) => ({ kind: ps.kind, reps: 0, load: ps.load, done: false })),
@@ -623,7 +706,17 @@ function toSessionExercise(p: PlannedExercise): SessionExercise {
 
 /** pengaturan lama/backup lama belum punya field bank gerakan */
 function withDefaults(s: Settings): Settings {
-  return { ...s, favorites: s.favorites ?? [], banned: s.banned ?? [] };
+  return { ...s, favorites: s.favorites ?? [], banned: s.banned ?? [], injuries: s.injuries ?? [] };
+}
+
+/** area yang dibebani sesi: gerakan yang tidak dilewati dan punya set tercatat */
+function loadedAreas(s: SessionRecord): Set<BodyArea> {
+  const areas = new Set<BodyArea>();
+  for (const e of s.exercises) {
+    if (e.skipped || !e.logged.some((l) => l.done)) continue;
+    for (const area of Object.keys(EXERCISE_BY_ID[e.exerciseId]?.load ?? {})) areas.add(area as BodyArea);
+  }
+  return areas;
 }
 
 export type DayInfo = { dayType: DayType; seqIndex: number };

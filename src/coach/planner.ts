@@ -5,7 +5,7 @@
 import { daysBetween } from './dates';
 import { CALIBRATION_DAYS, DELOAD_LOAD_FACTOR, deloadSets } from './deload';
 import { epley, loadForReps } from './e1rm';
-import { KNEE_LOAD_FACTOR, type KneeAccess } from './knee';
+import type { InjuryState } from './injury';
 import { family } from './ordering';
 import {
   type EquipmentConfig,
@@ -47,7 +47,6 @@ export interface PlannedExercise {
   sets: PlannedSet[];
   restSec: number;
   tempo: boolean;
-  kneeReduced: boolean;
   notes: string[];
 }
 
@@ -70,10 +69,8 @@ export interface PlanContext {
   today: string;
   programStart: string;
   deload: boolean;
-  kneeReduce: boolean;
-  /** tingkat lutut medium/high sudah terbuka */
-  kneeMediumOpen?: boolean;
-  kneeHighOpen?: boolean;
+  /** cedera aktif + konteks hari ini (nyeri stabil, Akut sesi) */
+  injuries?: InjuryState[];
   history?: SelectionHistory;
   favorites?: string[];
   banned?: string[];
@@ -81,8 +78,8 @@ export interface PlanContext {
   overrides?: Record<string, string>;
 }
 
-function kneeOf(ctx: PlanContext): KneeAccess {
-  return { reduce: ctx.kneeReduce, mediumOpen: !!ctx.kneeMediumOpen, highOpen: !!ctx.kneeHighOpen };
+function injuriesOf(ctx: PlanContext): InjuryState[] {
+  return ctx.injuries ?? [];
 }
 
 /**
@@ -124,7 +121,6 @@ export function planSession(ctx: PlanContext): PlannedSession {
   const notes: string[] = [];
   if (calib) notes.push('Minggu kalibrasi: sisakan 3–4 repetisi di setiap set. Fokus teknik, bukan beban.');
   if (ctx.deload) notes.push('Minggu ringan (deload): set dikurangi & beban 90%. Pulihkan badan.');
-  if (ctx.kneeReduce && ctx.dayType === 'C') notes.push('Lutut sedang sensitif: beban gerakan kaki dikurangi 20%.');
 
   if (ctx.dayType === 'AKTIF') {
     return { dayType: 'AKTIF', inCalibrationPhase: calib, deload: ctx.deload, notes, exercises: [], blockChanged: false, rotatedAway: [] };
@@ -139,7 +135,7 @@ export function planSession(ctx: PlanContext): PlannedSession {
     favorites: ctx.favorites ?? [],
     banned: ctx.banned ?? [],
     block: ctx.block,
-    knee: kneeOf(ctx),
+    injuries: injuriesOf(ctx),
     overrides: ctx.overrides,
   });
   notes.push(...sel.notes);
@@ -186,7 +182,7 @@ export function planSlotExercise(ctx: PlanContext, def: ExerciseDef, slotId: str
 /** Alternatif untuk tombol "Ganti gerakan", lengkap dengan perkiraan bebannya. */
 export function planAlternatives(ctx: PlanContext, slotId: string, currentId: string, sessionDefs: ExerciseDef[]): PlannedExercise[] {
   const assembled = assembledAfter(sessionDefs.filter((d) => d.block === 'main'));
-  return slotAlternatives(slotId, currentId, assembled, { banned: ctx.banned ?? [], knee: kneeOf(ctx) }).map((d) =>
+  return slotAlternatives(slotId, currentId, assembled, { banned: ctx.banned ?? [], injuries: injuriesOf(ctx) }).map((d) =>
     planSlotExercise(ctx, d, slotId, false),
   );
 }
@@ -201,8 +197,8 @@ function planExercise(
   const notes: string[] = [];
   const setCount = ctx.deload ? deloadSets(def.sets) : def.sets;
   const displayName = def.variants ? def.variants[Math.min(state.variant, def.variants.length - 1)] : def.name;
-  const kneeReduced = ctx.kneeReduce && !!def.lowerBody;
-  if (kneeReduced && def.kneeNote) notes.push(def.kneeNote);
+  const kneeInjured = injuriesOf(ctx).some((s) => s.injury.area === 'lutut') && def.load?.lutut !== undefined;
+  if (kneeInjured && def.kneeNote) notes.push(def.kneeNote);
   if (state.tempo) notes.push('Tempo lambat: turun 3 detik, jeda 1 detik di bawah, naik normal.');
   if (def.optional) notes.push('Opsional — lakukan kalau waktu masih cukup.');
 
@@ -220,10 +216,9 @@ function planExercise(
       // dibulatkan ulang kalau alat di Pengaturan berubah
       let load = roundDownToAchievable(ctx.eq, mode, state.load);
       if (ctx.deload) load = roundDownToAchievable(ctx.eq, mode, load * DELOAD_LOAD_FACTOR);
-      if (kneeReduced) load = roundDownToAchievable(ctx.eq, mode, load * KNEE_LOAD_FACTOR);
       if (giveWarmup) for (const w of warmupSets(ctx.eq, mode, load)) sets.push({ kind: 'warmup', repMin: w.reps, repMax: w.reps, load: w.load });
       for (let i = 0; i < setCount; i++) sets.push(work(load));
-      if (def.primary && !calib && !ctx.deload && !kneeReduced && amrapDue(state, ctx)) {
+      if (def.primary && !calib && !ctx.deload && amrapDue(state, ctx)) {
         sets[sets.length - 1] = { ...sets[sets.length - 1], kind: 'amrap', repMax: 50 };
         notes.push('Tes AMRAP di set terakhir: lakukan repetisi sebanyak mungkin dengan teknik baik, sisakan 1.');
       }
@@ -232,7 +227,7 @@ function planExercise(
     for (let i = 0; i < setCount; i++) sets.push(work(undefined));
   }
 
-  return { def, displayName, sets, restSec: def.restSec, tempo: state.tempo, kneeReduced, notes };
+  return { def, displayName, sets, restSec: def.restSec, tempo: state.tempo, notes };
 }
 
 function amrapDue(state: ExerciseState, ctx: PlanContext): boolean {
@@ -267,7 +262,8 @@ export function finalizeExercise(
   def: ExerciseDef,
   state: ExerciseState,
   eq: EquipmentConfig,
-  r: { sets: LoggedSet[]; feel: Feel; deload: boolean; kneeReduced: boolean; today: string },
+  /** kneeReduced: hanya untuk sesi lama (sebelum model cedera) */
+  r: { sets: LoggedSet[]; feel: Feel; deload: boolean; kneeReduced?: boolean; today: string },
 ): ExerciseState {
   const workSets = r.sets.filter((s) => s.kind === 'work' || s.kind === 'amrap');
   if (workSets.length === 0) return state;
