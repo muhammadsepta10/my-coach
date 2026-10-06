@@ -64,3 +64,13 @@ _Avoid_: Knee check (khusus lutut)
 
 **Cedera aktif**:
 Cedera yang belum ditandai sembuh, apa pun statusnya.
+
+**Beban area**:
+Seberapa berat sebuah gerakan membebani satu area tubuh: ringan, sedang, atau berat; area yang tidak disebut berarti tidak dibebani.
+_Avoid_: Knee tier, tingkat lutut (kini berlaku untuk semua area)
+
+**Nyeri stabil**:
+Cek nyeri ≤2 di sejumlah sesi berturut-turut yang membebani area cedera; dasar membuka gerakan sedang (2 sesi) dan menyarankan status Pulih (4 sesi).
+
+**Akut sesi**:
+Perlakuan Akut khusus untuk satu sesi karena cek nyeri ≥4, tanpa mengubah status cedera tersimpan.
