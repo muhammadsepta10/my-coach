@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { daysBetween, addDays } from './dates';
 import { nextDay, phase2Eligible, SEQUENCES } from './rotation';
-import { kneeModifier, stepUpUnlocked } from './knee';
 import { deloadSets, isDeloadActive, shouldDeload } from './deload';
 import { orderExercises } from './ordering';
 import { warmupSets } from './warmup';
@@ -34,7 +33,7 @@ describe('nextDay (rotasi bergulir)', () => {
 });
 
 describe('phase2Eligible', () => {
-  const base = { phase: 1 as const, programStart: '2026-01-01', today: '2026-02-15', recentKneeScores: [1, 2, 1, 0] };
+  const base = { phase: 1 as const, programStart: '2026-01-01', today: '2026-02-15', recentPainScores: [1, 2, 1, 0] };
   it('ya setelah 6 minggu dan lutut stabil', () => {
     expect(phase2Eligible(base)).toBe(true);
   });
@@ -42,34 +41,10 @@ describe('phase2Eligible', () => {
     expect(phase2Eligible({ ...base, today: '2026-02-01' })).toBe(false);
   });
   it('tidak kalau rata-rata nyeri lutut > 2', () => {
-    expect(phase2Eligible({ ...base, recentKneeScores: [3, 3, 2, 3] })).toBe(false);
+    expect(phase2Eligible({ ...base, recentPainScores: [3, 3, 2, 3] })).toBe(false);
   });
   it('tidak kalau data lutut belum cukup', () => {
-    expect(phase2Eligible({ ...base, recentKneeScores: [1] })).toBe(false);
-  });
-});
-
-describe('kneeModifier', () => {
-  it('kurangi beban kalau nyeri sebelum latihan ≥ 4', () => {
-    expect(kneeModifier(4, undefined).reduce).toBe(true);
-  });
-  it('normal kalau nyeri ringan', () => {
-    expect(kneeModifier(2, { kneePost: 2, kneeNextDay: 2 }).reduce).toBe(false);
-  });
-  it('kurangi beban kalau nyeri bertambah keesokan harinya', () => {
-    expect(kneeModifier(1, { kneePost: 1, kneeNextDay: 3 }).reduce).toBe(true);
-  });
-});
-
-describe('stepUpUnlocked', () => {
-  it('terbuka setelah 2 sesi C dengan nyeri ≤ 2', () => {
-    expect(stepUpUnlocked([{ kneePre: 1, kneePost: 2 }, { kneePre: 0, kneePost: 1 }])).toBe(true);
-  });
-  it('terkunci kalau salah satu sesi > 2', () => {
-    expect(stepUpUnlocked([{ kneePre: 1, kneePost: 3 }, { kneePre: 0, kneePost: 1 }])).toBe(false);
-  });
-  it('terkunci kalau baru 1 sesi', () => {
-    expect(stepUpUnlocked([{ kneePre: 0, kneePost: 0 }])).toBe(false);
+    expect(phase2Eligible({ ...base, recentPainScores: [1] })).toBe(false);
   });
 });
 
@@ -80,7 +55,7 @@ describe('deload', () => {
     lastDeloadStart: undefined,
     stallStreaks: [0, 0, 0, 0],
     recentFeels: ['pas', 'pas', 'ringan', 'pas', 'pas', 'pas'] as const,
-    kneeRising: false,
+    painRising: false,
   };
   it('wajib setelah 8 minggu', () => {
     expect(shouldDeload({ ...base, recentFeels: [...base.recentFeels] }).deload).toBe(true);
@@ -97,7 +72,7 @@ describe('deload', () => {
     expect(r.deload).toBe(true);
   });
   it('tidak dalam 3 minggu setelah deload sebelumnya', () => {
-    const r = shouldDeload({ ...base, recentFeels: [...base.recentFeels], today: '2026-02-01', lastDeloadStart: '2026-01-20', kneeRising: true });
+    const r = shouldDeload({ ...base, recentFeels: [...base.recentFeels], today: '2026-02-01', lastDeloadStart: '2026-01-20', painRising: true });
     expect(r.deload).toBe(false);
   });
   it('aktif selama 7 hari', () => {

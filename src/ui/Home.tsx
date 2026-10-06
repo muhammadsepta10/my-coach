@@ -1,24 +1,28 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useState } from 'react';
 import { addDays, daysBetween, today } from '../coach/dates';
+import { type Injury, PAIN_THRESHOLD, PULIH_STABLE_SESSIONS, STABLE_PAIN_MAX, injuryName } from '../coach/injury';
 import { DAY_LABEL, MOBILITY_STEPS, SLOT_BY_ID } from '../coach/program';
 import { SEQUENCES } from '../coach/rotation';
 import type { PlannedExercise } from '../coach/planner';
 import type { Settings } from '../data/db';
 import { coach } from '../data/instance';
 import { ExerciseAnimation } from './ExerciseAnimation';
+import { InjuryForm, InjuryList, PainChecks, capitalize } from './Injuries';
 import { SwapSheet } from './SwapSheet';
 import { Button, Card, PainScale, Pill, formatDate, loadText, targetText } from './common';
 
 export function Home({ settings }: { settings: Settings }) {
   const plan = useLiveQuery(() => coach.previewPlan(), []);
-  const pendingKnee = useLiveQuery(() => coach.pendingKneeCheck(), []);
+  const pendingPain = useLiveQuery(() => coach.pendingPainChecks(), []);
+  const injuries = useLiveQuery(() => coach.activeInjuries(), []);
+  const pulih = useLiveQuery(() => coach.pulihSuggestions(), []);
   const phase2 = useLiveQuery(() => coach.phase2Offer(), []);
   const weights = useLiveQuery(() => coach.bodyWeights(), []);
   const protein = useLiveQuery(() => coach.proteinTarget(), []);
   const history = useLiveQuery(() => coach.history(), []);
   const block = useLiveQuery(() => coach.blockStatus(), []);
-  const [askKnee, setAskKnee] = useState(false);
+  const [askPain, setAskPain] = useState(false);
   const [swap, setSwap] = useState<number | null>(null);
 
   const t = today();
@@ -42,7 +46,10 @@ export function Home({ settings }: { settings: Settings }) {
         </div>
       </header>
 
-      {pendingKnee && <KneeNextDayCard sessionId={pendingKnee.id!} />}
+      {pendingPain?.map((p) => (
+        <NextDayPainCard key={`${p.session.id}-${p.injury.id}`} sessionId={p.session.id!} injury={p.injury} />
+      ))}
+      {pulih?.map((i) => <PulihCard key={i.id} injury={i} />)}
       {phase2 && <Phase2Card />}
       {block?.showCard && <BlockCard block={block} />}
 
@@ -80,8 +87,9 @@ export function Home({ settings }: { settings: Settings }) {
           <Button
             className="w-full"
             onClick={async () => {
-              if (plan.dayType === 'C') setAskKnee(true);
-              else await coach.startSession({});
+              // cek nyeri sebelum sesi hanya kalau ada cedera aktif
+              if (plan.dayType === 'AKTIF' || !injuries?.length) await coach.startSession({});
+              else setAskPain(true);
             }}
           >
             {plan.dayType === 'AKTIF' ? 'Mulai Hari Aktif' : 'Mulai Latihan'}
@@ -89,7 +97,7 @@ export function Home({ settings }: { settings: Settings }) {
         </Card>
       )}
 
-      {askKnee && <KneePreDialog onCancel={() => setAskKnee(false)} />}
+      {askPain && <PrePainDialog injuries={injuries ?? []} onCancel={() => setAskPain(false)} />}
       {swap !== null && plan?.exercises[swap] && (
         <SwapSheet
           title={`${slotLabel(plan.exercises[swap])} · sekarang: ${plan.exercises[swap].displayName}`}
@@ -98,6 +106,8 @@ export function Home({ settings }: { settings: Settings }) {
           onClose={() => setSwap(null)}
         />
       )}
+
+      {injuries && <InjuriesCard injuries={injuries} />}
 
       {needWeigh && <WeighCard last={lastWeight?.kg} />}
 
@@ -195,22 +205,40 @@ function RotationDots({ phase, current }: { phase: 1 | 2; current: string }) {
   );
 }
 
-function KneePreDialog({ onCancel }: { onCancel: () => void }) {
-  const [v, setV] = useState<number | undefined>();
+function PrePainDialog({ injuries, onCancel }: { injuries: Injury[]; onCancel: () => void }) {
+  const [pain, setPain] = useState<Record<string, number>>({});
+  const [adding, setAdding] = useState(false);
+  const missing = injuries.some((i) => pain[i.id] === undefined);
+  const high = injuries.filter((i) => (pain[i.id] ?? 0) >= PAIN_THRESHOLD);
   return (
     <div className="fixed inset-0 z-20 bg-black/70 grid items-end">
-      <div className="bg-slate-900 rounded-t-3xl p-5 space-y-4 max-w-lg w-full mx-auto safe-bottom">
-        <h3 className="text-lg font-semibold">Cek lutut kiri sebelum latihan</h3>
-        <p className="text-sm text-slate-400">Seberapa nyeri lututmu sekarang (saat jalan / jongkok ringan)?</p>
-        <PainScale value={v} onChange={setV} />
-        {v !== undefined && v >= 4 && (
-          <p className="text-sm text-rose-300">Beban gerakan kaki akan dikurangi 20% dan squat dibuat lebih dangkal. Kalau nyeri tajam, lewati latihan kaki hari ini.</p>
+      <div className="bg-slate-900 rounded-t-3xl p-5 space-y-4 max-w-lg w-full mx-auto safe-bottom max-h-[90dvh] overflow-y-auto">
+        <h3 className="text-lg font-semibold">Cek nyeri sebelum latihan</h3>
+        {injuries.length > 0 ? (
+          <>
+            <p className="text-sm text-slate-400">Seberapa nyeri bagian ini sekarang (saat bergerak ringan)?</p>
+            <PainChecks injuries={injuries} value={pain} onChange={setPain} />
+          </>
+        ) : (
+          <p className="text-sm text-slate-400">Tidak ada cedera aktif.</p>
+        )}
+        {high.length > 0 && (
+          <p className="text-sm text-rose-300">
+            Nyeri tinggi di {high.map((i) => injuryName(i)).join(', ')}: gerakan yang membebaninya dilewati hari ini. Kalau nyeri tajam, istirahat dulu.
+          </p>
+        )}
+        {adding ? (
+          <InjuryForm onDone={() => setAdding(false)} onCancel={() => setAdding(false)} />
+        ) : (
+          <Button variant="ghost" className="w-full" onClick={() => setAdding(true)}>
+            + Ada yang baru sakit?
+          </Button>
         )}
         <div className="grid grid-cols-2 gap-2">
           <Button variant="secondary" onClick={onCancel}>
             Batal
           </Button>
-          <Button disabled={v === undefined} onClick={() => coach.startSession({ kneePre: v })}>
+          <Button disabled={missing || adding} onClick={() => coach.startSession({ pain })}>
             Lanjut
           </Button>
         </div>
@@ -219,16 +247,55 @@ function KneePreDialog({ onCancel }: { onCancel: () => void }) {
   );
 }
 
-function KneeNextDayCard({ sessionId }: { sessionId: number }) {
+function NextDayPainCard({ sessionId, injury }: { sessionId: number; injury: Injury }) {
   const [v, setV] = useState<number | undefined>();
   return (
     <Card className="space-y-3 border-sky-800">
-      <p className="font-semibold">Bagaimana lutut kirimu hari ini?</p>
-      <p className="text-sm text-slate-400">Sehari setelah latihan kaki. Ini membantu coach mengatur beban sesi C berikutnya.</p>
+      <p className="font-semibold">Bagaimana {injuryName(injury)}-mu hari ini?</p>
+      <p className="text-sm text-slate-400">Sehari setelah latihan yang membebaninya. Ini membantu coach memilih gerakan sesi berikutnya.</p>
       <PainScale value={v} onChange={setV} />
-      <Button className="w-full" disabled={v === undefined} onClick={() => coach.recordKneeNextDay(sessionId, v!)}>
+      <Button className="w-full" disabled={v === undefined} onClick={() => coach.recordNextDayPain(sessionId, injury.id, v!)}>
         Simpan
       </Button>
+    </Card>
+  );
+}
+
+function PulihCard({ injury }: { injury: Injury }) {
+  return (
+    <Card className="space-y-3 border-emerald-800 bg-emerald-950/30">
+      <p className="font-semibold text-emerald-300">
+        {capitalize(injuryName(injury))} stabil {PULIH_STABLE_SESSIONS} sesi 🎉
+      </p>
+      <p className="text-sm text-emerald-100/80">
+        Nyeri ≤{STABLE_PAIN_MAX} di {PULIH_STABLE_SESSIONS} sesi berturut-turut. Ubah status jadi Pulih? Gerakan yang lebih berat untuk area ini akan
+        terbuka.
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        <Button variant="secondary" onClick={() => coach.snoozePulih(injury.id)}>
+          Nanti
+        </Button>
+        <Button onClick={() => coach.setInjuryStatus(injury.id, 'pulih')}>Ya, Pulih</Button>
+      </div>
+    </Card>
+  );
+}
+
+function InjuriesCard({ injuries }: { injuries: Injury[] }) {
+  const [adding, setAdding] = useState(false);
+  return (
+    <Card className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="font-semibold">Cedera aktif</p>
+        {!adding && (
+          <button className="text-sm text-sky-400" onClick={() => setAdding(true)}>
+            + Tambah
+          </button>
+        )}
+      </div>
+      {adding && <InjuryForm onDone={() => setAdding(false)} onCancel={() => setAdding(false)} />}
+      <InjuryList injuries={injuries} />
+      {injuries.length > 0 && <p className="text-xs text-slate-500">Ketuk untuk ubah status. Tandai sembuh di Pengaturan → Cedera.</p>}
     </Card>
   );
 }

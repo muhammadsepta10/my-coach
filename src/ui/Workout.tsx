@@ -1,14 +1,17 @@
+import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { family, setupInstruction } from '../coach/planner';
 import { achievableLoads, formatKg } from '../coach/plates';
 import { DAY_LABEL, EXERCISE_BY_ID, MOBILITY_STEPS, SLOT_BY_ID, WARMUP_STEPS, youtubeUrl } from '../coach/program';
+import { PAIN_THRESHOLD, injuryName } from '../coach/injury';
 import { slotIdOf } from '../coach/selection';
 import type { Feel } from '../coach/types';
 import type { SessionExercise, SessionRecord, Settings } from '../data/db';
 import { coach } from '../data/instance';
 import { ExerciseAnimation } from './ExerciseAnimation';
+import { PainChecks, capitalize } from './Injuries';
 import { SwapSheet } from './SwapSheet';
-import { Button, Card, PainScale, Pill, Stepper, loadText, targetText } from './common';
+import { Button, Card, Pill, Stepper, loadText, targetText } from './common';
 import { beep, useWakeLock } from './feedback';
 
 export function Workout({ session, settings }: { session: SessionRecord; settings: Settings }) {
@@ -72,6 +75,7 @@ function Warmup({ session }: { session: SessionRecord }) {
   return (
     <Shell session={session} title="Pemanasan ±5 menit">
       <div className="space-y-3">
+        <AkutOffers session={session} />
         {session.notes.map((n) => (
           <p key={n} className="text-sm text-sky-200/90 bg-sky-500/10 rounded-lg px-3 py-2">
             {n}
@@ -109,6 +113,38 @@ function Warmup({ session }: { session: SessionRecord }) {
         </Button>
       </BottomBar>
     </Shell>
+  );
+}
+
+/** Nyeri ≥4 sebelum sesi: tawarkan mengubah status cedera jadi Akut (bukan hanya hari ini). */
+function AkutOffers({ session }: { session: SessionRecord }) {
+  const injuries = useLiveQuery(() => coach.activeInjuries(), []);
+  const offers = (injuries ?? []).filter((i) => session.akutOffers?.includes(i.id) && i.status !== 'akut');
+  const dismiss = (id: string) => coach.updateSession(session.id!, { akutOffers: session.akutOffers?.filter((x) => x !== id) });
+  return (
+    <>
+      {offers.map((i) => (
+        <Card key={i.id} className="space-y-2 border-rose-800 bg-rose-950/30">
+          <p className="font-semibold text-rose-300">
+            {capitalize(injuryName(i))} nyeri {session.pain?.[i.id]?.pre}/10
+          </p>
+          <p className="text-sm text-rose-100/80">Hari ini gerakan yang membebaninya sudah dilewati. Ubah status jadi Akut supaya sesi berikutnya juga begitu?</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="secondary" onClick={() => dismiss(i.id)}>
+              Hari ini saja
+            </Button>
+            <Button
+              onClick={async () => {
+                await coach.setInjuryStatus(i.id, 'akut');
+                await dismiss(i.id);
+              }}
+            >
+              Ubah jadi Akut
+            </Button>
+          </div>
+        </Card>
+      ))}
+    </>
   );
 }
 
@@ -511,9 +547,11 @@ function Countdown({ seconds, label, autoStart, onEnd }: { seconds: number; labe
 }
 
 function Finish({ session }: { session: SessionRecord }) {
-  const [knee, setKnee] = useState<number | undefined>();
+  const [pain, setPain] = useState<Record<string, number>>({});
+  const loaded = useLiveQuery(() => coach.loadedInjuries(session.id!), [session]);
   const [busy, setBusy] = useState(false);
-  const isC = session.dayType === 'C';
+  const missingPain = (loaded ?? []).some((i) => pain[i.id] === undefined);
+  const highPain = (loaded ?? []).some((i) => (pain[i.id] ?? 0) >= PAIN_THRESHOLD);
   const doneSets = session.exercises.flatMap((e) => e.logged.filter((l) => l.done && l.kind !== 'warmup').map((l) => ({ e, l })));
   const volume = doneSets.reduce((s, { e, l }) => {
     const def = EXERCISE_BY_ID[e.exerciseId];
@@ -537,11 +575,12 @@ function Finish({ session }: { session: SessionRecord }) {
             {noFeel.length} gerakan belum diberi penilaian rasa — dianggap "Pas".
           </p>
         )}
-        {isC && (
+        {loaded && loaded.length > 0 && (
           <Card className="space-y-2">
-            <p className="font-semibold">Cek lutut kiri setelah latihan</p>
-            <PainScale value={knee} onChange={setKnee} />
-            {knee !== undefined && knee >= 4 && (
+            <p className="font-semibold">Cek nyeri setelah latihan</p>
+            <p className="text-sm text-slate-400">Bagian yang dibebani latihan hari ini.</p>
+            <PainChecks injuries={loaded} value={pain} onChange={setPain} />
+            {highPain && (
               <p className="text-sm text-rose-300">Catat ya. Kompres dingin & istirahatkan. Kalau besok tidak membaik, periksakan ke dokter/fisioterapis.</p>
             )}
           </Card>
@@ -550,10 +589,10 @@ function Finish({ session }: { session: SessionRecord }) {
       <BottomBar>
         <Button
           className="w-full"
-          disabled={busy || (isC && knee === undefined)}
+          disabled={busy || loaded === undefined || missingPain}
           onClick={async () => {
             setBusy(true);
-            await coach.finishSession(session.id!, { kneePost: knee });
+            await coach.finishSession(session.id!, { pain });
           }}
         >
           Simpan & selesai

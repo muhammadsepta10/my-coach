@@ -1,22 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { PlannedExercise } from '../coach/planner';
-import type { KneeTier } from '../coach/types';
 import { ExerciseAnimation } from './ExerciseAnimation';
+import { AreaLoadText } from './Injuries';
 import { Button, Pill, loadText, targetText } from './common';
 
-const TIER_LABEL: Record<KneeTier, { text: string; tone: 'emerald' | 'amber' | 'rose' }> = {
-  low: { text: 'lutut: ringan', tone: 'emerald' },
-  medium: { text: 'lutut: sedang', tone: 'amber' },
-  high: { text: 'lutut: berat', tone: 'rose' },
-};
-
-export function KneeTierPill({ tier }: { tier?: KneeTier }) {
-  if (!tier) return null;
-  const t = TIER_LABEL[tier];
-  return <Pill tone={t.tone}>{t.text}</Pill>;
-}
-
-/** Lembar "Ganti gerakan": alternatif dari slot yang sama, boleh untuk lutut, bukan 🚫. */
+/** Lembar "Ganti gerakan": alternatif dari slot yang sama, aman untuk cedera aktif, bukan 🚫. */
 export function SwapSheet({
   title,
   load,
@@ -47,7 +35,7 @@ export function SwapSheet({
         {error && <p className="text-sm text-rose-300">{error}</p>}
         {options === null && !error && <p className="text-sm text-slate-500">Memuat…</p>}
         {options?.length === 0 && (
-          <p className="text-sm text-slate-400">Belum ada alternatif lain untuk slot ini (terkunci lutut atau ditandai 🚫).</p>
+          <p className="text-sm text-slate-400">Belum ada alternatif lain untuk slot ini (terkunci karena cedera atau ditandai 🚫).</p>
         )}
         <ul className="space-y-2">
           {options?.map((o) => {
@@ -80,8 +68,8 @@ export function SwapSheet({
                         ? `Set kalibrasi (${loadText(o.def.loadMode, first.load)})`
                         : `${work.length} × ${first ? targetText(o.def, first) : ''}${o.def.kind === 'weighted' ? ` · ${loadText(o.def.loadMode, first?.load)}` : ''}`}
                     </p>
+                    <AreaLoadText load={o.def.load} />
                     <div className="flex gap-1 mt-1 flex-wrap">
-                      <KneeTierPill tier={o.def.kneeTier} />
                       {o.seed && <Pill tone="sky">beban diperkirakan</Pill>}
                     </div>
                   </div>

@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { epley } from '../coach/e1rm';
+import { PAIN_THRESHOLD, injuryName } from '../coach/injury';
 import { formatKg } from '../coach/plates';
 import { DAY_LABEL, EXERCISES, EXERCISE_BY_ID } from '../coach/program';
 import type { SessionRecord } from '../data/db';
@@ -140,6 +141,8 @@ function Empty() {
 
 function SessionItem({ s }: { s: SessionRecord }) {
   const [open, setOpen] = useState(false);
+  const settings = useLiveQuery(() => coach.getSettings(), []);
+  const injuryNames = Object.fromEntries((settings?.injuries ?? []).map((i) => [i.id, injuryName(i)]));
   const sets = s.exercises.reduce((n, e) => n + e.logged.filter((l) => l.done && l.kind !== 'warmup').length, 0);
   return (
     <li>
@@ -159,9 +162,22 @@ function SessionItem({ s }: { s: SessionRecord }) {
               </>
             )}
             {s.deload && <Pill tone="amber">deload</Pill>}
-            {s.kneePre !== undefined && <Pill tone={s.kneePre >= 4 ? 'rose' : 'slate'}>lutut pra {s.kneePre}</Pill>}
-            {s.kneePost !== undefined && <Pill tone={s.kneePost >= 4 ? 'rose' : 'slate'}>pasca {s.kneePost}</Pill>}
-            {s.kneeNextDay !== undefined && <Pill tone={s.kneeNextDay >= 4 ? 'rose' : 'slate'}>besok {s.kneeNextDay}</Pill>}
+            {Object.entries(s.pain ?? {}).flatMap(([id, p]) => {
+              const name = injuryNames[id] ?? id;
+              return (
+                [
+                  ['pra', p.pre],
+                  ['pasca', p.post],
+                  ['besok', p.nextDay],
+                ] as const
+              )
+                .filter(([, v]) => v !== undefined)
+                .map(([label, v]) => (
+                  <Pill key={`${id}-${label}`} tone={v! >= PAIN_THRESHOLD ? 'rose' : 'slate'}>
+                    {name} {label} {v}
+                  </Pill>
+                ));
+            })}
           </div>
         </button>
         {open && s.dayType !== 'AKTIF' && (

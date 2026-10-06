@@ -15,7 +15,8 @@ export function shouldDeload(p: {
   /** stallStreak tiap gerakan yang sudah punya riwayat */
   stallStreaks: number[];
   recentFeels: Feel[];
-  kneeRising: boolean;
+  /** nyeri salah satu cedera aktif cenderung naik */
+  painRising: boolean;
 }): { deload: boolean; reason?: string } {
   if (daysBetween(p.programStart, p.today) < CALIBRATION_DAYS) return { deload: false };
   const since = daysBetween(p.lastDeloadStart ?? p.programStart, p.today);
@@ -30,7 +31,7 @@ export function shouldDeload(p: {
     const heavy = p.recentFeels.filter((f) => f === 'berat').length;
     if (heavy / p.recentFeels.length >= 0.5) return { deload: true, reason: 'Banyak gerakan terasa berat belakangan ini' };
   }
-  if (p.kneeRising) return { deload: true, reason: 'Nyeri lutut cenderung naik' };
+  if (p.painRising) return { deload: true, reason: 'Nyeri cedera cenderung naik' };
   return { deload: false };
 }
 
