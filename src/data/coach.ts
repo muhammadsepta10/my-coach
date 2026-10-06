@@ -9,14 +9,13 @@ import {
   type InjuryState,
   type InjuryStatus,
   type Side,
-  PAIN_THRESHOLD,
   PULIH_STABLE_SESSIONS,
   injuryState,
   painRising,
 } from '../coach/injury';
 import { type EquipmentConfig, roundDownToAchievable } from '../coach/plates';
 import { type PlanContext, type PlannedExercise, finalizeExercise, planAlternatives, planSession, planSlotExercise, targetRir } from '../coach/planner';
-import { EXERCISE_BY_ID, SLOT_BY_ID } from '../coach/program';
+import { CORE_POOL, EXERCISE_BY_ID, SLOT_BY_ID, slotsForDay } from '../coach/program';
 import { type SelectionHistory, blockIndexFor, blockStartFor, selectExercises, slotIdOf } from '../coach/selection';
 import { applyCalibration, initialState } from '../coach/progression';
 import { nextDay as rotationNext, phase2Eligible } from '../coach/rotation';
@@ -97,16 +96,27 @@ export function createCoach(db: CoachDB, now: () => string) {
     return done.filter((d) => loadedAreas(d).has(injury.area) || d.pain?.[injury.id]?.post !== undefined);
   }
 
+  /**
+   * Riwayat nyeri satu cedera dari sesi yang membebani areanya, dan apakah pemicu
+   * Akut sesi dari nyeri keesokan hari sudah dipakai oleh sesi sesudahnya.
+   */
+  function painHistory(injury: Injury, done: SessionRecord[]) {
+    const loaded = loadedSessions(injury, done);
+    const last = loaded[loaded.length - 1];
+    const after = last ? done.slice(done.indexOf(last) + 1) : [];
+    return {
+      history: loaded.map((d) => d.pain?.[injury.id]),
+      nextDayUsed: after.some((d) => d.acuteApplied?.includes(injury.id)),
+    };
+  }
+
   /** cedera aktif + konteks hari ini (nyeri stabil, Akut sesi dari nyeri sebelum sesi) */
   async function injuryStates(prePain: Record<string, number> = {}): Promise<InjuryState[]> {
     const done = await doneSessions();
-    return (await activeInjuries()).map((i) =>
-      injuryState(
-        i,
-        loadedSessions(i, done).map((d) => d.pain?.[i.id]),
-        prePain[i.id],
-      ),
-    );
+    return (await activeInjuries()).map((i) => {
+      const { history, nextDayUsed } = painHistory(i, done);
+      return injuryState(i, history, prePain[i.id], nextDayUsed);
+    });
   }
 
   async function deloadStatus(): Promise<{ active: boolean; reason?: string; start?: string }> {
@@ -118,7 +128,7 @@ export function createCoach(db: CoachDB, now: () => string) {
     const feels = done
       .flatMap((d) => d.exercises.filter((e) => !e.skipped && e.feel).map((e) => e.feel as Feel))
       .slice(-12);
-    const rising = (await activeInjuries()).some((i) => painRising(loadedSessions(i, done).map((d) => d.pain?.[i.id])));
+    const rising = (await activeInjuries()).some((i) => painRising(painHistory(i, done).history));
     const r = shouldDeload({
       today,
       programStart: s.programStart,
@@ -213,10 +223,12 @@ export function createCoach(db: CoachDB, now: () => string) {
       }
     }
     const prePain = opts.pain ?? {};
-    const plan = planSession(await planContext({ dayType, today, deload, prePain }));
+    const ctx = await planContext({ dayType, today, deload, prePain });
+    const plan = planSession(ctx);
     const notes = [...plan.notes];
-    const active = await activeInjuries();
-    const akutOffers = active.filter((i) => i.status !== 'akut' && (prePain[i.id] ?? 0) >= PAIN_THRESHOLD).map((i) => i.id);
+    // Akut sesi hanya "terpakai" di hari yang memang punya gerakan untuk area itu
+    const acuteApplied = (ctx.injuries ?? []).filter((st) => st.acuteToday && dayLoadsArea(dayType, st.injury.area)).map((st) => st.injury);
+    const akutOffers = acuteApplied.filter((i) => i.status !== 'akut').map((i) => i.id);
     if (deload) {
       const s = await requireSettings();
       if (s.deloadReason) notes.unshift(`Minggu ringan: ${s.deloadReason}.`);
@@ -235,6 +247,7 @@ export function createCoach(db: CoachDB, now: () => string) {
       notes,
       pain: Object.fromEntries(Object.entries(prePain).map(([id, pre]) => [id, { pre }])),
       ...(akutOffers.length ? { akutOffers } : {}),
+      ...(acuteApplied.length ? { acuteApplied: acuteApplied.map((i) => i.id) } : {}),
       exercises,
       cursor: 0,
       startedAt: Date.now(),
@@ -552,9 +565,9 @@ export function createCoach(db: CoachDB, now: () => string) {
     const active = await activeInjuries();
     const done = await doneSessions();
     const scores = active.flatMap((i) =>
-      loadedSessions(i, done)
-        .slice(-2)
-        .flatMap((d) => [d.pain?.[i.id]?.pre, d.pain?.[i.id]?.post])
+      painHistory(i, done)
+        .history.slice(-2)
+        .flatMap((p) => [p?.pre, p?.post])
         .filter((x): x is number => x !== undefined),
     );
     return phase2Eligible({ phase: s.phase, programStart: s.programStart, today: now(), recentPainScores: active.length ? scores : null });
@@ -707,6 +720,13 @@ function toSessionExercise(p: PlannedExercise): SessionExercise {
 /** pengaturan lama/backup lama belum punya field bank gerakan */
 function withDefaults(s: Settings): Settings {
   return { ...s, favorites: s.favorites ?? [], banned: s.banned ?? [], injuries: s.injuries ?? [] };
+}
+
+/** hari latihan ini punya kandidat (slot atau core) yang membebani area tersebut */
+function dayLoadsArea(dayType: DayType, area: BodyArea): boolean {
+  if (dayType === 'AKTIF') return false;
+  const ids = [...slotsForDay(dayType).flatMap((s) => s.candidates), ...CORE_POOL.map((d) => d.id)];
+  return ids.some((id) => EXERCISE_BY_ID[id]?.load?.[area] !== undefined);
 }
 
 /** area yang dibebani sesi: gerakan yang tidak dilewati dan punya set tercatat */

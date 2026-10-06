@@ -77,8 +77,10 @@ export interface SessionRecord {
   notes: string[];
   /** cek nyeri per cedera (id cedera → skor sebelum, sesudah, keesokan hari) */
   pain?: Record<string, PainEntry>;
-  /** cedera yang nyerinya ≥4 sebelum sesi ini: tawarkan ubah status jadi Akut */
+  /** cedera dengan Akut sesi hari ini: tawarkan ubah status jadi Akut */
   akutOffers?: string[];
+  /** cedera yang diperlakukan Akut sesi di sesi ini (hari yang memang membebani areanya) */
+  acuteApplied?: string[];
   /** data lama sebelum model cedera; dipindah ke `pain` saat migrasi */
   kneeReduce?: boolean;
   kneePre?: number;

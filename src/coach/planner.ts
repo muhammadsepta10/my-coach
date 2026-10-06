@@ -197,8 +197,8 @@ function planExercise(
   const notes: string[] = [];
   const setCount = ctx.deload ? deloadSets(def.sets) : def.sets;
   const displayName = def.variants ? def.variants[Math.min(state.variant, def.variants.length - 1)] : def.name;
-  const kneeInjured = injuriesOf(ctx).some((s) => s.injury.area === 'lutut') && def.load?.lutut !== undefined;
-  if (kneeInjured && def.kneeNote) notes.push(def.kneeNote);
+  const kneeRecovering = injuriesOf(ctx).some((s) => s.injury.area === 'lutut' && s.injury.status === 'pemulihan');
+  if (kneeRecovering && def.load?.lutut !== undefined && def.kneeNote) notes.push(def.kneeNote);
   if (state.tempo) notes.push('Tempo lambat: turun 3 detik, jeda 1 detik di bawah, naik normal.');
   if (def.optional) notes.push('Opsional — lakukan kalau waktu masih cukup.');
 

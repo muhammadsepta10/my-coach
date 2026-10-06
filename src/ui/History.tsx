@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { epley } from '../coach/e1rm';
-import { injuryName } from '../coach/injury';
+import { PAIN_THRESHOLD, injuryName } from '../coach/injury';
 import { formatKg } from '../coach/plates';
 import { DAY_LABEL, EXERCISES, EXERCISE_BY_ID } from '../coach/program';
 import type { SessionRecord } from '../data/db';
@@ -173,7 +173,7 @@ function SessionItem({ s }: { s: SessionRecord }) {
               )
                 .filter(([, v]) => v !== undefined)
                 .map(([label, v]) => (
-                  <Pill key={`${id}-${label}`} tone={v! >= 4 ? 'rose' : 'slate'}>
+                  <Pill key={`${id}-${label}`} tone={v! >= PAIN_THRESHOLD ? 'rose' : 'slate'}>
                     {name} {label} {v}
                   </Pill>
                 ));

@@ -427,6 +427,29 @@ describe('cedera', () => {
     expect(lututPicks(await coach.previewPlan())).toEqual([]);
   });
 
+  it('Akut sesi dari nyeri keesokan hari hanya berlaku untuk satu sesi yang membebani area itu', async () => {
+    const knee = await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pulih' });
+    await toC();
+    await doSession();
+    clock = '2026-01-06';
+    const [pending] = await coach.pendingPainChecks();
+    await coach.recordNextDayPain(pending.session.id!, knee.id, 6);
+    const a = (await coach.startSession({}))!;
+    await coach.finishActiveDay(a.id!, { minutes: 20, mobility: false });
+    await doSession(); // A: tidak membebani lutut, Akut sesi belum terpakai
+    await doSession(); // B
+    const c = (await coach.startSession({ pain: { [knee.id]: 1 } }))!;
+    expect(c.exercises.filter((e) => lututLoad(e.exerciseId))).toEqual([]);
+    expect(c.akutOffers).toEqual([knee.id]);
+    await coach.discardSession(c.id!);
+    await doSession(); // sesi C yang memakai Akut sesi
+    const a2 = (await coach.startSession({}))!;
+    await coach.finishActiveDay(a2.id!, { minutes: 20, mobility: false });
+    await doSession();
+    await doSession();
+    expect(lututPicks(await coach.previewPlan()).length).toBeGreaterThan(0);
+  });
+
   it('Pemulihan: gerakan sedang terbuka setelah 2 sesi stabil', async () => {
     await coach.addInjury({ area: 'lutut', side: 'kiri', status: 'pemulihan' });
     const c4Options = async () => {

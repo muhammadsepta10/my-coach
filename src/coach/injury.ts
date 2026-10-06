@@ -132,9 +132,13 @@ export function stableSessions(history: PainHistory): number {
   return n;
 }
 
-/** Akut sesi: nyeri ≥4 hari ini, atau keesokan hari sesi terakhir ≥4 / naik ≥2. */
-export function acuteToday(history: PainHistory, prePain: number | undefined): boolean {
+/**
+ * Akut sesi: nyeri ≥4 hari ini, atau keesokan hari sesi terakhir ≥4 / naik ≥2.
+ * `nextDayUsed`: pemicu keesokan hari sudah dipakai satu sesi (berlaku sekali saja).
+ */
+export function acuteToday(history: PainHistory, prePain: number | undefined, nextDayUsed = false): boolean {
   if (prePain !== undefined && prePain >= PAIN_THRESHOLD) return true;
+  if (nextDayUsed) return false;
   const last = history[history.length - 1];
   if (last?.nextDay === undefined) return false;
   if (last.nextDay >= PAIN_THRESHOLD) return true;
@@ -149,6 +153,6 @@ export function painRising(history: PainHistory): boolean {
   return last !== undefined && (last >= PAIN_THRESHOLD || (prev !== undefined && last - prev >= 2));
 }
 
-export function injuryState(injury: Injury, history: PainHistory, prePain?: number): InjuryState {
-  return { injury, stableSessions: stableSessions(history), acuteToday: acuteToday(history, prePain) };
+export function injuryState(injury: Injury, history: PainHistory, prePain?: number, nextDayUsed = false): InjuryState {
+  return { injury, stableSessions: stableSessions(history), acuteToday: acuteToday(history, prePain, nextDayUsed) };
 }

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { family, setupInstruction } from '../coach/planner';
 import { achievableLoads, formatKg } from '../coach/plates';
 import { DAY_LABEL, EXERCISE_BY_ID, MOBILITY_STEPS, SLOT_BY_ID, WARMUP_STEPS, youtubeUrl } from '../coach/program';
-import { injuryName } from '../coach/injury';
+import { PAIN_THRESHOLD, injuryName } from '../coach/injury';
 import { slotIdOf } from '../coach/selection';
 import type { Feel } from '../coach/types';
 import type { SessionExercise, SessionRecord, Settings } from '../data/db';
@@ -551,7 +551,7 @@ function Finish({ session }: { session: SessionRecord }) {
   const loaded = useLiveQuery(() => coach.loadedInjuries(session.id!), [session]);
   const [busy, setBusy] = useState(false);
   const missingPain = (loaded ?? []).some((i) => pain[i.id] === undefined);
-  const highPain = (loaded ?? []).some((i) => (pain[i.id] ?? 0) >= 4);
+  const highPain = (loaded ?? []).some((i) => (pain[i.id] ?? 0) >= PAIN_THRESHOLD);
   const doneSets = session.exercises.flatMap((e) => e.logged.filter((l) => l.done && l.kind !== 'warmup').map((l) => ({ e, l })));
   const volume = doneSets.reduce((s, { e, l }) => {
     const def = EXERCISE_BY_ID[e.exerciseId];

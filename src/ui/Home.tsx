@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useState } from 'react';
 import { addDays, daysBetween, today } from '../coach/dates';
-import { type Injury, injuryName } from '../coach/injury';
+import { type Injury, PAIN_THRESHOLD, PULIH_STABLE_SESSIONS, STABLE_PAIN_MAX, injuryName } from '../coach/injury';
 import { DAY_LABEL, MOBILITY_STEPS, SLOT_BY_ID } from '../coach/program';
 import { SEQUENCES } from '../coach/rotation';
 import type { PlannedExercise } from '../coach/planner';
@@ -87,7 +87,8 @@ export function Home({ settings }: { settings: Settings }) {
           <Button
             className="w-full"
             onClick={async () => {
-              if (plan.dayType === 'AKTIF') await coach.startSession({});
+              // cek nyeri sebelum sesi hanya kalau ada cedera aktif
+              if (plan.dayType === 'AKTIF' || !injuries?.length) await coach.startSession({});
               else setAskPain(true);
             }}
           >
@@ -208,7 +209,7 @@ function PrePainDialog({ injuries, onCancel }: { injuries: Injury[]; onCancel: (
   const [pain, setPain] = useState<Record<string, number>>({});
   const [adding, setAdding] = useState(false);
   const missing = injuries.some((i) => pain[i.id] === undefined);
-  const high = injuries.filter((i) => (pain[i.id] ?? 0) >= 4);
+  const high = injuries.filter((i) => (pain[i.id] ?? 0) >= PAIN_THRESHOLD);
   return (
     <div className="fixed inset-0 z-20 bg-black/70 grid items-end">
       <div className="bg-slate-900 rounded-t-3xl p-5 space-y-4 max-w-lg w-full mx-auto safe-bottom max-h-[90dvh] overflow-y-auto">
@@ -263,8 +264,13 @@ function NextDayPainCard({ sessionId, injury }: { sessionId: number; injury: Inj
 function PulihCard({ injury }: { injury: Injury }) {
   return (
     <Card className="space-y-3 border-emerald-800 bg-emerald-950/30">
-      <p className="font-semibold text-emerald-300">{capitalize(injuryName(injury))} stabil 4 sesi 🎉</p>
-      <p className="text-sm text-emerald-100/80">Nyeri ≤2 di 4 sesi berturut-turut. Ubah status jadi Pulih? Gerakan yang lebih berat untuk area ini akan terbuka.</p>
+      <p className="font-semibold text-emerald-300">
+        {capitalize(injuryName(injury))} stabil {PULIH_STABLE_SESSIONS} sesi 🎉
+      </p>
+      <p className="text-sm text-emerald-100/80">
+        Nyeri ≤{STABLE_PAIN_MAX} di {PULIH_STABLE_SESSIONS} sesi berturut-turut. Ubah status jadi Pulih? Gerakan yang lebih berat untuk area ini akan
+        terbuka.
+      </p>
       <div className="grid grid-cols-2 gap-2">
         <Button variant="secondary" onClick={() => coach.snoozePulih(injury.id)}>
           Nanti
